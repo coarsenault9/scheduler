@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Monthly Scheduler — Persistent Data, Colors & Logs</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
+<script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
+
+<style>
+  body { font-family: Arial, sans-serif; margin: 18px; }
+  h1 { margin: 0 0 8px; }
+  .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: 10px 0; }
+  .toolbar input[type="number"] { width: 70px; }
+  .palette { display:flex; flex-wrap:wrap; gap:6px; }
+  .swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
+  .swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
+  #grid { margin: 8px 0 16px; }
+
+  .handsontable th { background:#eee !important; }
+  .date-row td { background:#e0e0e0 !important; font-weight:600; }
+  .week-sep td { border-bottom: 3px solid #000 !important; }
+  td.day-sep { border-right: 1px solid #aaa !important; }
+
+  table.out { border-collapse: collapse; width: 100%; margin-top: 10px; }
+  table.out th, table.out td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
+  table.out th { background: #eee; }
+</style>
+</head>
+<body>
+  <h1>Monthly Scheduler (Persistent)</h1>
+  <div class="toolbar">
+    <button id="prev">◀ Prev</button>
+    <span id="label" style="font-weight:600"></span>
+    <button id="next">Next ▶</button>
+
+    <span style="margin-left:12px;"><b>Fill color:</b></span>
+    <div class="palette" id="palette"></div>
+
+    <span style="margin-left:12px;"><b>Add rows to this week:</b></span>
+    <input id="rowsToAdd" type="number" min="1" value="5">
+    <button id="addRowsBtn">Add rows</button>
+
+    <button id="process">Process → ShiftLog & Summary</button>
+  </div>
+
+  <div id="grid"></div>
+
+  <h2>ShiftLog</h2>
+  <div id="shiftLog"></div>
+
+  <h2>Summary</h2>
+  <div id="summary"></div>
+
+<script>
+/* ---------- Helpers ---------- */
+const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+function startOfCalendar(year, monthIdx) {
+  const first = new Date(year, monthIdx, 1);
+  const dow = (first.getDay()+6)%7;
+  const d = new Date(first);
+  d.setDate(first.getDate() - dow);
+  return d;
+}
+function sixWeekMatrix(year, monthIdx) {
+  const start = startOfCalendar(year, monthIdx);
+  const weeks = [];
+  for (let w=0; w<6; w++) {
+    const row = [];
+    for (let d=0; d<7; d++) {
+      const cell = new Date(start);
+      cell.setDate(start.getDate() + w*7 + d);
+      row.push(cell);
+    }
+    weeks.push(row);
+  }
+  return weeks;
+}
+function fmtDate(d) {
+  const day = String(d.getDate()).padStart(2,'0');
+  const mon = d.toLocaleString('default',{month:'short'});
+  const yr  = d.getFullYear();
+  return `${day}-${mon}-${yr}`;
+}
+
+/* ---------- Globals ---------- */
+const container = document.getElementById('grid');
+let hot, current = new Date();
+let lastSel = null;
+let clipboardMeta = null; // store copied colors
+
+/** Per-month store: { bodyRows, data, meta, shiftLog, summary } */
+let monthStore = {};
+let currentKey = null;
+
+const NUM_WEEKS = 6;
+const COLS_PER_DAY = 2; 
+const DAYS_PER_WEEK = 7;
+const TOTAL_COLS = DAYS_PER_WEEK * COLS_PER_DAY;
+const DEFAULT_BODY_ROWS = [11,11,11,11,11,11];
+
+const colors = ["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb",
+                "#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8",
+                "#e8eaed","#d50000","#c51162","#aa00ff","#304ffe",
+                "#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
+
+let bodyRows = DEFAULT_BODY_ROWS.slice();
+
+/* ---------- Store helpers ---------- */
+function monthKey(y,m) { return `${y}-${m}`; }
+function initMonthState(y,m) {
+  const state = {
+    bodyRows: DEFAULT_BODY_ROWS.slice(),
+    data: buildDataFor(y,m, DEFAULT_BODY_ROWS),
+    meta: {},
+    shiftLog: [],
+    summary: []
+  };
+  monthStore[monthKey(y,m)] = state;
+  return state;
+}
+function getMonthState(y,m) {
+  const key = monthKey(y,m);
+  if (!monthStore[key]) return initMonthState(y,m);
+  return monthStore[key];
+}
+function saveCurrentMonth() {
+  if (!hot || !currentKey) return;
+  const state = monthStore[currentKey];
+  state.data = hot.getSourceData();
+  state.bodyRows = bodyRows.slice();
+}
+
+/* ---------- Layout helpers ---------- */
+function weekStarts() {
+  const starts = [];
+  let acc = 0;
+  for (let i=0;i<NUM_WEEKS;i++) {
+    starts.push(acc);
+    acc += 1 + bodyRows[i];
+  }
+  return starts;
+}
+function weekIndexForRow(rowIdx) {
+  const starts = weekStarts();
+  for (let i=0;i<NUM_WEEKS;i++) {
+    const start = starts[i];
+    const end = start + 1 + bodyRows[i] - 1;
+    if (rowIdx >= start && rowIdx <= end) return i;
+  }
+  return -1;
+}
+function buildDataFor(y, m, bodyRowsArr) {
+  const rows = bodyRowsArr.reduce((s,b)=>s+1+b,0);
+  const data = Array.from({length: rows}, () => Array(TOTAL_COLS).fill(""));
+  const matrix = sixWeekMatrix(y,m);
+  let acc=0;
+  for (let w=0; w<NUM_WEEKS; w++) {
+    const headerRow = acc;
+    for (let d=0; d<DAYS_PER_WEEK; d++) {
+      const cL = d*COLS_PER_DAY;
+      const date = matrix[w][d];
+      if (date.getMonth() === m) data[headerRow][cL] = String(date.getDate());
+    }
+    acc += 1+bodyRowsArr[w];
+  }
+  return data;
+}
+
+/* ---------- Color meta ---------- */
+function rcKey(r,c){ return `${r}:${c}`; }
+function applyAllMeta(state) {
+  for (const [key, meta] of Object.entries(state.meta)) {
+    if (!meta) continue;
+    const [r,c] = key.split(':').map(Number);
+    if (meta.bgColor) hot.setCellMeta(r,c,'bgColor',meta.bgColor);
+  }
+  hot.render();
+}
+
+/* ---------- Renderer ---------- */
+function colorRenderer(instance, td, row, col, prop, value, cellProps) {
+  Handsontable.renderers.TextRenderer.apply(this, arguments);
+  const meta = instance.getCellMeta(row,col);
+  if (weekStarts().includes(row)) {
+    td.style.backgroundColor = "#e0e0e0";
+    td.style.fontWeight = "600";
+    td.style.color = "#000";
+  } else if (meta.bgColor) {
+    td.style.backgroundColor = meta.bgColor;
+    td.style.color = "#000";
+  } else {
+    td.style.backgroundColor = "";
+    td.style.color = "";
+  }
+  if (col % 2 === 1) td.classList.add('day-sep');
+}
+
+/* ---------- Render month ---------- */
+function renderMonth() {
+  const y = current.getFullYear();
+  const m = current.getMonth();
+  currentKey = monthKey(y,m);
+  document.getElementById("label").textContent =
+    `${current.toLocaleString('default',{month:'long'})} ${y}`;
+  const state = getMonthState(y,m);
+  bodyRows = state.bodyRows.slice();
+  if (hot) hot.destroy();
+  hot = new Handsontable(container, {
+    data: state.data,
+    colHeaders: false,
+    rowHeaders: true,
+    licenseKey: 'non-commercial-and-evaluation',
+    columns: Array.from({length: TOTAL_COLS}, () => ({ type:'text' })),
+    nestedHeaders: [DOW.map(day => ({ label: day, colspan: COLS_PER_DAY }))],
+    contextMenu: true,
+    manualColumnResize: true,
+    manualRowResize: true,
+    height: 'auto',
+    outsideClickDeselects: false,
+    cells: (row,col)=>{
+      const props={ renderer: colorRenderer };
+      const starts = weekStarts();
+      if (starts.includes(row)) props.readOnly = true;
+      for (let w=0; w<NUM_WEEKS; w++) {
+        const lastRow = starts[w] + 1 + bodyRows[w] - 1;
+        if (row===lastRow) props.className = (props.className||"")+" week-sep";
+      }
+      return props;
+    },
+    afterSelectionEnd: (r1,c1,r2,c2)=>{ lastSel=[r1,c1,r2,c2]; },
+    afterCopy: (data,coords)=>{ // capture colors
+      clipboardMeta = [];
+      coords.forEach(({startRow,startCol,endRow,endCol})=>{
+        for(let r=startRow;r<=endRow;r++){
+          for(let c=startCol;c<=endCol;c++){
+            const bg=hot.getCellMeta(r,c).bgColor;
+            clipboardMeta.push({r:r-startRow,c:c-startCol,bg:bg});
+          }
+        }
+      });
+    },
+    afterPaste: (data,coords)=>{
+      if(!clipboardMeta) return;
+      const {startRow,startCol} = coords[0];
+      const state = monthStore[currentKey];
+      clipboardMeta.forEach(item=>{
+        if(item.bg){
+          const rr=startRow+item.r, cc=startCol+item.c;
+          hot.setCellMeta(rr,cc,'bgColor',item.bg);
+          state.meta[rcKey(rr,cc)]={bgColor:item.bg};
+        }
+      });
+      hot.render();
+    }
+  });
+  applyAllMeta(state);
+  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],state.shiftLog);
+  renderTable("summary",["Employee","Count"],state.summary);
+}
+
+/* ---------- Color fill ---------- */
+function applyColor(color){
+  const selection = lastSel || hot.getSelectedLast();
+  if(!selection){alert("Select cells first");return;}
+  const [r1,c1,r2,c2]=selection;
+  const starts=weekStarts();
+  const state=monthStore[currentKey];
+  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){
+    if(starts.includes(r))continue;
+    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
+      hot.setCellMeta(r,c,'bgColor',color||null);
+      if(color) state.meta[rcKey(r,c)]={bgColor:color};
+      else delete state.meta[rcKey(r,c)];
+    }
+  }
+  hot.render();
+}
+
+/* ---------- Palette ---------- */
+(function(){
+  const p=document.getElementById('palette');
+  colors.forEach(c=>{
+    const sw=document.createElement('div');
+    sw.className='swatch';
+    sw.style.background=c;
+    sw.onclick=()=>applyColor(c);
+    p.appendChild(sw);
+  });
+  const clr=document.createElement('div');
+  clr.className='swatch clear';
+  clr.textContent='×';
+  clr.title='Clear fill';
+  clr.onclick=()=>applyColor(null);
+  p.appendChild(clr);
+})();
+
+/* ---------- Row add ---------- */
+function addRowsToCurrentWeek(n=1){
+  const selection=lastSel||hot.getSelectedLast();
+  const selRow=selection?Math.min(selection[0],selection[2]):0;
+  const w=weekIndexForRow(selRow);
+  if(w<0){alert('Select inside a week');return;}
+  const state=monthStore[currentKey];
+  const starts=weekStarts();
+  const insertAt=starts[w]+1;
+  bodyRows[w]+=n;
+  state.bodyRows=bodyRows.slice();
+  state.data.splice(insertAt,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
+  hot.loadData(state.data);
+  applyAllMeta(state);
+}
+
+/* ---------- Process schedule ---------- */
+function processSchedule(){
+  const y=current.getFullYear(), m=current.getMonth();
+  const matrix=sixWeekMatrix(y,m);
+  const data=hot.getData();
+  const shiftLog=[], summary={};
+  const starts=weekStarts();
+  for(let w=0;w<NUM_WEEKS;w++){
+    const headerRow=starts[w];
+    const startRow=headerRow+1;
+    const endRow=headerRow+bodyRows[w];
+    for(let d=0;d<DAYS_PER_WEEK;d++){
+      const cL=d*COLS_PER_DAY,cR=cL+1;
+      const date=matrix[w][d];
+      if(date.getMonth()!==m) continue;
+      const dateStr=fmtDate(date);
+      let r=startRow;
+      while(r<=endRow){
+        const study=(data[r][cL]||"").trim();
+        const visit=(data[r][cR]||"").trim();
+        if(study&&visit){
+          let rr=r+1;
+          while(rr<=endRow){
+            const left=(data[rr][cL]||"").trim();
+            if(left.toUpperCase()==="INV"||left==="")break;
+            rr++;
+          }
+          let pi="",site="";
+          if(rr<=endRow&&(data[rr][cL]||"").trim().toUpperCase()==="INV"){
+            pi=(data[rr][cR]||"").trim(); rr++;
+          }
+          if(rr<=endRow&&(data[rr][cL]||"").trim()==="Site"){
+            site=(data[rr][cR]||"").trim(); rr++;
+          }
+          for(let x=r+1;x<rr;x++){
+            const role=(data[x][cL]||"").trim();
+            const emp=(data[x][cR]||"").trim();
+            if(!role||!emp)continue;
+            if(["INV","SITE","TRAVEL","STAY","DRIVE"].includes(role.toUpperCase()))continue;
+            shiftLog.push([dateStr,study,visit,role,emp,"",site,pi]);
+            summary[emp]=(summary[emp]||0)+1;
+          }
+          r=rr;
+        } else r++;
+      }
+    }
+  }
+  const sumRows=Object.entries(summary).map(([e,c])=>[e,c]);
+  const state=monthStore[currentKey];
+  state.shiftLog=shiftLog;
+  state.summary=sumRows;
+  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],shiftLog);
+  renderTable("summary",["Employee","Count"],sumRows);
+}
+function renderTable(id,headers,rows){
+  let html="<table class='out'><tr>"+headers.map(h=>`<th>${h}</th>`).join("")+"</tr>";
+  rows.forEach(r=>{html+="<tr>"+r.map(v=>`<td>${v||""}</td>`).join("")+"</tr>";});
+  html+="</table>";
+  document.getElementById(id).innerHTML=html;
+}
+
+/* ---------- Init ---------- */
+document.getElementById('prev').onclick=()=>{ saveCurrentMonth(); current.setMonth(current.getMonth()-1); renderMonth(); };
+document.getElementById('next').onclick=()=>{ saveCurrentMonth(); current.setMonth(current.getMonth()+1); renderMonth(); };
+document.getElementById('process').onclick=processSchedule;
+document.getElementById('addRowsBtn').onclick=()=>{ const n=parseInt(document.getElementById('rowsToAdd').value||'1',10); addRowsToCurrentWeek(Math.max(1,n)); };
+
+renderMonth();
+</script>
+</body>
+</html>
