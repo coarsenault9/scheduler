@@ -10,6 +10,12 @@
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
 
+<!-- ✅ Handsontable ESM build -->
+<script type="module">
+  import Handsontable from "https://cdn.jsdelivr.net/npm/handsontable@14.3.0/esm/handsontable.js";
+  window.Handsontable = Handsontable; // expose globally for your inline script
+</script>
+
 <style>
   body { font-family: Arial, sans-serif; margin: 18px; }
   nav { margin-bottom: 12px; }
@@ -25,11 +31,6 @@
   table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
   table.out th { background:#eee; }
 </style>
-<!-- Use ESM build of Handsontable -->
-<script type="module">
-  import Handsontable from "https://cdn.jsdelivr.net/npm/handsontable@14.3.0/esm/handsontable.js";
-  window.Handsontable = Handsontable;
-</script>
 </head>
 <body>
   <h1>Scheduler App</h1>
@@ -77,7 +78,6 @@
     <div id="summaryStudy"></div>
     <h3>Site Visits</h3>
     <div id="summarySite"></div>
-  </div>
 
 <script>
 /* ---------------- Firebase Init (compat) ---------------- */
