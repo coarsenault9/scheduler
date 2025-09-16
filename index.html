@@ -283,6 +283,13 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
+      // 🔹 Skip Travel/Stay/Drive rows
+      const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
+      if (forbidden.includes(study.toUpperCase())) {
+        r++;
+        continue;
+      }
+
       if (study && visit) {
         const wk = weekIndexForRowLocal(r);
         const dayIdx = Math.floor(c / 2);
@@ -307,7 +314,7 @@ function parseSchedule(y, m) {
           if (leftU === "INV") { pi = right; rr++; continue; }
           if (left === "Site") { site = right; rr++; break; }
 
-          if (right && !["INV","SITE","TRAVEL","STAY","DRIVE"].includes(leftU)) {
+          if (right && !["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)) {
             roles.push({ role: left, emp: right });
           }
           rr++;
@@ -357,7 +364,6 @@ function parseSchedule(y, m) {
 function refreshMonthSelect(){
   const sel=document.getElementById('monthSelect');
   sel.innerHTML="";
-  // Keep months in chronological order
   Object.keys(monthStore).sort().forEach(k=>{
     const o=document.createElement('option');
     o.value=k; o.textContent=k; sel.appendChild(o);
