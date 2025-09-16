@@ -19,14 +19,16 @@
   table.out { border-collapse: collapse; width:100%; margin-top:10px; }
   table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
   table.out th { background:#eee; }
+  #fbStatus { font-size: 12px; margin-left: 8px; opacity:.8; }
 </style>
 </head>
 <body>
-  <h1>Scheduler App</h1>
+  <h1>Scheduler App <span id="fbStatus">(firebase: not ready)</span></h1>
   <nav>
     <button onclick="showPage('schedulerPage')">Scheduler</button>
     <button onclick="showPage('directoryPage')">Directory</button>
     <button onclick="showPage('reportsPage')">Reports</button>
+    <button onclick="testFirebase()" title="Writes/reads diagnostics/hello">Test Firebase</button>
   </nav>
 
   <!-- Scheduler Page -->
@@ -69,11 +71,11 @@
     <div id="summarySite"></div>
   </div>
 
-<!-- 🔌 Firebase SDK (kept separate; sets window.firebaseBits) -->
+<!-- 🔌 Firebase SDK (module) -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
   import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
-  import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
@@ -85,12 +87,38 @@
     measurementId: "G-00XV2C5HDL"
   };
 
-  const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
-  signInAnonymously(getAuth(app)).catch(console.error);
+  let readyOnce = false;
 
-  // expose for the non-module script below
-  window.firebaseBits = { db, doc, setDoc, getDoc, onSnapshot };
+  try {
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+    const auth = getAuth(app);
+
+    signInAnonymously(auth).catch(e=>{
+      console.error("Firebase anon sign-in error:", e);
+      const s=document.getElementById('fbStatus'); if(s) s.textContent="(firebase auth error)";
+    });
+
+    onAuthStateChanged(auth, (user)=>{
+      const s=document.getElementById('fbStatus');
+      if(user){
+        console.log("Firebase: ready, uid:", user.uid);
+        if(s) s.textContent="(firebase: ready)";
+        window.firebaseBits = { db, doc, setDoc, getDoc, onSnapshot };
+        // Nudge the page to (re)attach Firestore listeners once ready
+        if (typeof window.onFirebaseReady === "function" && !readyOnce) {
+          readyOnce = true;
+          window.onFirebaseReady();
+        }
+      }else{
+        console.warn("Firebase: signed out / no user");
+        if(s) s.textContent="(firebase: signed out)";
+      }
+    });
+  } catch (e) {
+    console.error("Firebase init failed:", e);
+    const s=document.getElementById('fbStatus'); if(s) s.textContent="(firebase init failed)";
+  }
 </script>
 
 <script>
@@ -99,10 +127,21 @@ let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
-
-/* ✅ Added for Firebase realtime */
 let unwatchMonth=null, unwatchDirectory=null;
-const { db, doc, setDoc, getDoc, onSnapshot } = window.firebaseBits || {};
+
+// Will be filled once Firebase module sets it
+let db, doc, setDoc, getDoc, onSnapshot;
+
+/* --------- Helper: called by module once Firebase ready --------- */
+window.onFirebaseReady = function(){
+  ({ db, doc, setDoc, getDoc, onSnapshot } = window.firebaseBits || {});
+  console.log("[onFirebaseReady] attaching listeners for current month + directory");
+  // Re-render current month so onSnapshot attaches
+  renderMonth();
+  // Load directory and attach watcher
+  loadDirectory();
+  attachDirectoryWatcher();
+};
 
 /* ---------------- Page Switching (YOUR BASE) ---------------- */
 function showPage(id){
@@ -158,7 +197,6 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
   const color=monthStore[key]?.meta?.[`${row}:${col}`];
   if(color) td.style.background=color;
 
-  // Grey out full day columns outside the month
   const state = monthStore[key];
   if (state && state.calendar) {
     const weekIdx = weekIndexForRow(row);
@@ -180,44 +218,48 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
 function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
 function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
-/* ✅ Firebase helpers (ADDED) */
+/* ---------------- Firebase save/load (ADDED, guarded) ---------------- */
 async function saveMonth(key) {
-  if (!window.firebaseBits) return;      // allow offline/local usage
-  const state = monthStore[key];
-  if (!state) return;
-  const calendar = (state.calendar||[]).map(w=>w.map(d=>({date:d.date.toISOString(),inMonth:d.inMonth})));
-  await setDoc(doc(db,"months",key), {
-    data: state.data,
-    meta: state.meta,
-    bodyRows: state.bodyRows,
-    calendar
-  }, { merge:true });
+  if (!db) return; // allow offline usage without throwing
+  try{
+    const state = monthStore[key];
+    if (!state) return;
+    const calendar = (state.calendar||[]).map(w=>w.map(d=>({date:d.date.toISOString(),inMonth:d.inMonth})));
+    await setDoc(doc(db,"months",key), {
+      data: state.data,
+      meta: state.meta,
+      bodyRows: state.bodyRows,
+      calendar
+    }, { merge:true });
+    console.log("[saveMonth] saved", key);
+  }catch(e){ console.error("[saveMonth] error", e); }
 }
 async function loadMonth(key) {
-  if (!window.firebaseBits) return false;
-  const snap = await getDoc(doc(db,"months",key));
-  if (!snap.exists()) return false;
-  const s=snap.data();
-  const calendar = (s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
-  monthStore[key]={data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar,
-    shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-  return true;
+  if (!db) return false;
+  try{
+    const snap = await getDoc(doc(db,"months",key));
+    if (!snap.exists()) return false;
+    const s=snap.data();
+    const calendar = (s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
+    monthStore[key]={data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar,
+      shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+    console.log("[loadMonth] loaded", key);
+    return true;
+  }catch(e){ console.error("[loadMonth] error", e); return false; }
 }
 
-/* 🔧 renderMonth changed to async ONLY to allow load/save; behavior unchanged */
+/* ---------------- renderMonth (YOUR BASE, now async to load) ---------------- */
 async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
+  console.log("[renderMonth]", key);
   const weeks=numWeeks(y,m);
-
   if(!monthStore[key]){
-    // Try to load from Firestore first
-    const loaded = await loadMonth(key);
+    const loaded = await loadMonth(key); // try cloud first
     if(!loaded){
-      // Build fresh exactly as your base did
       const br=Array(weeks).fill(8);
       const data=buildDataFor(y,m,weeks,br);
       const matrix=buildWeekMatrix(y,m,weeks);
-      const dayMeta={}; // (kept for compatibility if you used it elsewhere)
+      const dayMeta={};
       let acc=0;
       for(let w=0;w<weeks;w++){
         for(let d=0;d<DAYS_PER_WEEK;d++){
@@ -228,11 +270,10 @@ async function renderMonth(){
         acc+=1+br[w];
       }
       monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-      // Save initial month so realtime clients can see it
+      // Save only if Firebase is ready
       await saveMonth(key);
     }
   }
-
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
 
@@ -245,49 +286,30 @@ async function renderMonth(){
     contextMenu:true,
     cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterCopy:(data,coords)=>{clipboardMeta=[];
-      coords.forEach(({startRow,startCol,endRow,endCol})=>{
-        for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
-          const key=monthKey(current.getFullYear(),current.getMonth());
-          const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
-          clipboardMeta.push({r:r-startRow,c:c-startCol,color});
-        }
-      });
-    },
-    afterPaste:(data,coords)=>{
-      if(!clipboardMeta)return;
-      const {startRow,startCol}=coords[0];
-      const key=monthKey(current.getFullYear(),current.getMonth());
-      clipboardMeta.forEach(item=>{
-        if(item.color){
-          const rr=startRow+item.r,cc=startCol+item.c;
-          if(!monthStore[key].meta) monthStore[key].meta={};
-          monthStore[key].meta[`${rr}:${cc}`]=item.color;
-        }
-      });
-      hot.render();
-      saveMonth(key);
-    },
-    afterChange:(changes, source)=>{
-      if(source!=='loadData'){
-        // Persist edits
-        saveMonth(key);
-      }
-    }
+    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
+      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
+        const key=monthKey(current.getFullYear(),current.getMonth());
+        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
+        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
+      }});},
+    afterPaste:(data,coords)=>{if(!clipboardMeta)return;const {startRow,startCol}=coords[0];const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{if(item.color){const rr=startRow+item.r,cc=startCol+item.c;if(!monthStore[key].meta)monthStore[key].meta={};monthStore[key].meta[`${rr}:${cc}`]=item.color;}});
+      hot.render(); saveMonth(key);},
+    afterChange:(changes, source)=>{ if(source!=='loadData'){ saveMonth(key); } }
   });
 
-  // 🔴 Realtime listener for the current month (safe: only load if snapshot exists)
-  if (window.firebaseBits) {
+  // Attach realtime watcher (only if Firebase ready)
+  if (db) {
     if(unwatchMonth){unwatchMonth(); unwatchMonth=null;}
     unwatchMonth = onSnapshot(doc(db,"months",key),(snap)=>{
       if(!snap.exists()) return;
       const s=snap.data();
       const calendar=(s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
-      // Replace state, then refresh grid data (DON’T recreate table)
       monthStore[key]={...monthStore[key],data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar};
       bodyRows=monthStore[key].bodyRows.slice();
-      if(hot) { hot.loadData(monthStore[key].data); hot.render(); }
-    });
+      if(hot){ hot.loadData(monthStore[key].data); hot.render(); }
+      console.log("[onSnapshot] month update", key);
+    }, (err)=>console.error("[onSnapshot month] error", err));
   }
 }
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
@@ -333,7 +355,7 @@ function delRows(){const n=parseInt(document.getElementById('rowsToModify').valu
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
   renderMonth(); saveMonth(key);}
 
-/* ---------------- Directory (YOUR BASE; + save/load) ---------------- */
+/* ---------------- Directory (YOUR BASE; + persistence) ---------------- */
 directoryHot=new Handsontable(document.getElementById('directory'),{
   data:[["","",""]],
   colHeaders:["Name","Email","Phone"], rowHeaders:true, minSpareRows:1,
@@ -342,27 +364,33 @@ directoryHot=new Handsontable(document.getElementById('directory'),{
 });
 function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
 
-/* ✅ Directory persistence + realtime */
+/* Directory persistence + realtime (ADDED) */
 async function saveDirectory(){
-  if (!window.firebaseBits) return;
-  const rows = directoryHot.getData();
-  await setDoc(doc(db,"directory","main"), { rows }, { merge:true });
+  if (!db) return;
+  try{
+    const rows = directoryHot.getData();
+    await setDoc(doc(db,"directory","main"), { rows }, { merge:true });
+    console.log("[saveDirectory] saved");
+  }catch(e){ console.error("[saveDirectory] error", e); }
 }
 async function loadDirectory(){
-  if (!window.firebaseBits) return;
-  const snap = await getDoc(doc(db,"directory","main"));
-  if (snap.exists()) directoryHot.loadData(snap.data().rows);
+  if (!db) return;
+  try{
+    const snap = await getDoc(doc(db,"directory","main"));
+    if (snap.exists()) directoryHot.loadData(snap.data().rows);
+    console.log("[loadDirectory] loaded");
+  }catch(e){ console.error("[loadDirectory] error", e); }
 }
-// kick off directory load + subscribe
-loadDirectory();
-if (window.firebaseBits) {
-  if(unwatchDirectory){unwatchDirectory(); unwatchDirectory=null;}
+function attachDirectoryWatcher(){
+  if (!db) return;
+  if (unwatchDirectory) { unwatchDirectory(); unwatchDirectory=null; }
   unwatchDirectory = onSnapshot(doc(db,"directory","main"), (snap)=>{
     if(snap.exists()){
       const { rows } = snap.data();
       if (rows) directoryHot.loadData(rows);
+      console.log("[onSnapshot] directory update");
     }
-  });
+  }, (err)=>console.error("[onSnapshot directory] error", err));
 }
 
 /* ---------------- Process Schedule (YOUR BASE) ---------------- */
@@ -405,12 +433,8 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
-      // Skip Travel/Stay/Drive rows
       const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
-      if (forbidden.includes(study.toUpperCase())) {
-        r++;
-        continue;
-      }
+      if (forbidden.includes(study.toUpperCase())) { r++; continue; }
 
       if (study && visit) {
         const wk = weekIndexForRowLocal(r);
@@ -442,14 +466,12 @@ function parseSchedule(y, m) {
           rr++;
         }
 
-        // ShiftLog entries
         roles.forEach(({ role, emp }) => {
           const email = emailMap[emp.toLowerCase()] || "";
           shiftLog.push([dateStr, study, visit, role, emp, email, site, pi]);
           summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
         });
 
-        // Unique visits counting
         if (dateObj) {
           const dKey = formatDate(dateObj);
 
@@ -526,8 +548,23 @@ function renderTable(id,hdrs,rows){
   document.getElementById(id).innerHTML = html;
 }
 
+/* ---------------- Diagnostics ---------------- */
+async function testFirebase(){
+  if(!window.firebaseBits){ console.warn("Firebase not ready"); alert("Firebase not ready. Check Console for errors."); return; }
+  try{
+    const { db, doc, setDoc, getDoc } = window.firebaseBits;
+    await setDoc(doc(db,"diagnostics","hello"),{ts:Date.now(),note:"hi from scheduler"});
+    const snap = await getDoc(doc(db,"diagnostics","hello"));
+    console.log("Diagnostics doc:", snap.exists()? snap.data(): "(missing)");
+    alert("Firebase test OK. See Console for details.");
+  }catch(e){
+    console.error("Diagnostics failed:", e);
+    alert("Firebase test FAILED. See Console for details.");
+  }
+}
+
 /* ---------------- Init (YOUR BASE) ---------------- */
-renderMonth();
+renderMonth(); // render immediately (works without Firebase too)
 </script>
 </body>
 </html>
