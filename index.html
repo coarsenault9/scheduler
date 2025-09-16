@@ -4,18 +4,6 @@
 <meta charset="UTF-8" />
 <title>Scheduler App</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
-
-<!-- 🔥 Firebase (compat) – minimal intrusion, no modules -->
-<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
-
-<!-- ✅ Handsontable ESM build -->
-<script type="module">
-  import Handsontable from "https://cdn.jsdelivr.net/npm/handsontable@14.3.0/esm/handsontable.js";
-  window.Handsontable = Handsontable; // expose globally for your inline script
-</script>
-
 <style>
   body { font-family: Arial, sans-serif; margin: 18px; }
   nav { margin-bottom: 12px; }
@@ -50,7 +38,7 @@
       <span style="margin-left:12px;"><b>Fill color:</b></span>
       <div class="palette" id="palette"></div>
       <span style="margin-left:12px;"><b>Rows:</b></span>
-      <input id="rowsToModify" type="number" min="1" value="1" style="width:60px;">
+      <input id="rowsToModify" name="rowsToModify" type="number" min="1" value="1" style="width:60px;" autocomplete="off">
       <button onclick="addRows()">+ Add</button>
       <button onclick="delRows()">– Delete</button>
     </div>
@@ -78,9 +66,17 @@
     <div id="summaryStudy"></div>
     <h3>Site Visits</h3>
     <div id="summarySite"></div>
+  </div>
 
-<script>
-/* ---------------- Firebase Init (compat) ---------------- */
+<!-- EVERYTHING BELOW RUNS AS ONE ESM MODULE -->
+<script type="module">
+/* ========== Imports (ESM) ========== */
+import Handsontable from "https://cdn.jsdelivr.net/npm/handsontable@14.3.0/esm/handsontable.js";
+import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+/* ========== Firebase Init (ESM) ========== */
 const firebaseConfig = {
   apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
   authDomain: "crcscheduler.firebaseapp.com",
@@ -90,18 +86,24 @@ const firebaseConfig = {
   appId: "1:865356677041:web:002d88c85f00140088c790",
   measurementId: "G-00XV2C5HDL"
 };
-firebase.initializeApp(firebaseConfig);
-firebase.auth().signInAnonymously().catch(console.error);
-const db = firebase.firestore();
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
 
-/* ---------------- Shared State ---------------- */
+// Sign in anon (so rules can require auth if you want)
+signInAnonymously(auth).catch(console.error);
+onAuthStateChanged(auth, (u) => {
+  if (u) console.log("Firebase signed in (anon):", u.uid);
+});
+
+/* ========== Your Original App State ========== */
 let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
 let unsubscribeMonth = null;
 
-/* ---------------- Minimal helpers for Firestore ---------------- */
+/* ========== Firestore helpers (flatten to avoid nested arrays) ========== */
 // Store grid as an OBJECT of rows => avoids nested array restriction
 function toRowMap(data){
   const obj={};
@@ -143,16 +145,15 @@ function deserializeReports(docData){
   };
 }
 
+/* ========== Utility + Calendar ========== */
 function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
 
-/* ---------------- Page Switching ---------------- */
 function showPage(id){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   if(id==='reportsPage') refreshMonthSelect();
 }
 
-/* ---------------- Calendar Helpers ---------------- */
 function startOfCalendar(year, monthIdx){
   const first=new Date(year,monthIdx,1);
   const dow=(first.getDay()+6)%7; // Mon=0
@@ -183,14 +184,12 @@ function buildWeekMatrix(year, monthIdx, weeks){
   }
   return matrix;
 }
-
-/* ---------------- Data ---------------- */
 function buildDataFor(y,m,weeks,br){
   const rows=br.reduce((s,b)=>s+1+b,0);
   return Array.from({length:rows},()=>Array(TOTAL_COLS).fill(""));
 }
 
-/* ---------------- Renderer ---------------- */
+/* ========== Rendering ========== */
 function colorRenderer(instance, td, row, col, prop, value, cellProps){
   Handsontable.renderers.TextRenderer.apply(this, arguments);
 
@@ -216,10 +215,11 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
   if(col%2===1) td.classList.add('day-sep');
 }
 
-/* ---------------- Scheduler ---------------- */
+/* ========== Scheduler helpers ========== */
 function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
 function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
+/* ========== Month render + Handsontable init ========== */
 function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
@@ -272,11 +272,20 @@ function renderMonth(){
       hot.render(); saveMonth(key);},
     afterChange:(changes, source)=>{ if(source!=='loadData'){ const key=monthKey(current.getFullYear(),current.getMonth()); saveMonth(key);} }
   });
+
+  // Directory table init (only once)
+  if(!directoryHot){
+    directoryHot=new Handsontable(document.getElementById('directory'),{
+      data:[["","",""]],
+      colHeaders:["Name","Email","Phone"], rowHeaders:true, minSpareRows:1,
+      contextMenu:true, licenseKey:'non-commercial-and-evaluation'
+    });
+  }
 }
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
 function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
 
-/* ---------------- Colors ---------------- */
+/* ========== Colors ========== */
 const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8","#e8eaed","#d50000","#c51162","#aa00ff","#304ffe","#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
 (function(){const p=document.getElementById('palette');colors.forEach(c=>{let sw=document.createElement('div');sw.className='swatch';sw.style.background=c;sw.onclick=()=>applyColor(c);p.appendChild(sw);});let clr=document.createElement('div');clr.className='swatch clear';clr.textContent='×';clr.onclick=()=>applyColor(null);p.appendChild(clr);})();
 function applyColor(color){
@@ -290,7 +299,7 @@ function applyColor(color){
   hot.render(); saveMonth(key);
 }
 
-/* ---------------- Add/Delete Rows ---------------- */
+/* ========== Add/Delete Rows ========== */
 function shiftMeta(meta, startRow, delta){
   const newMeta={};
   Object.entries(meta).forEach(([k,v])=>{
@@ -315,15 +324,19 @@ function delRows(){const n=parseInt(document.getElementById('rowsToModify').valu
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
   renderMonth(); saveMonth(key);}
 
-/* ---------------- Directory ---------------- */
-directoryHot=new Handsontable(document.getElementById('directory'),{
-  data:[["","",""]],
-  colHeaders:["Name","Email","Phone"], rowHeaders:true, minSpareRows:1,
-  contextMenu:true, licenseKey:'non-commercial-and-evaluation'
-});
-function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
+/* ========== Directory Map for emails ========== */
+function getDirectoryMap(){
+  const map={};
+  if(!directoryHot) return map;
+  directoryHot.getData().forEach(r=>{
+    const name=(r[0]||"").trim().toLowerCase();
+    const email=(r[1]||"").trim();
+    if(name&&email)map[name]=email;
+  });
+  return map;
+}
 
-/* ---------------- Process Schedule (unchanged) ---------------- */
+/* ========== Parse Schedule (unchanged) ========== */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -363,7 +376,7 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
-      // 🔹 Skip Travel/Stay/Drive rows
+      // Skip Travel/Stay/Drive rows
       const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
       if (forbidden.includes(study.toUpperCase())) {
         r++;
@@ -440,7 +453,7 @@ function parseSchedule(y, m) {
   state.summarySite = Object.entries(siteVisits).map(([site, dates]) => [site, dates.size]);
 }
 
-/* ---------------- Reports ---------------- */
+/* ========== Reports ========== */
 function refreshMonthSelect(){
   const sel=document.getElementById('monthSelect');
   sel.innerHTML="";
@@ -449,7 +462,6 @@ function refreshMonthSelect(){
     o.value=k; o.textContent=k; sel.appendChild(o);
   });
 }
-
 function renderReports(){
   const sel=document.getElementById('monthSelect').value;
   if(!sel) return;
@@ -477,7 +489,6 @@ function renderReports(){
   // Persist reports too
   saveMonth(sel);
 }
-
 function renderTable(id,hdrs,rows){
   let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
   rows.forEach(r=>{
@@ -487,7 +498,7 @@ function renderTable(id,hdrs,rows){
   document.getElementById(id).innerHTML = html;
 }
 
-/* ---------------- Firestore save/load ---------------- */
+/* ========== Firestore save/load (ESM) ========== */
 async function saveMonth(key){
   const state=monthStore[key];
   if(!state) return;
@@ -500,21 +511,20 @@ async function saveMonth(key){
     dataRows: toRowMap(state.data),
     bodyRows: state.bodyRows || [],
     meta: state.meta || {},
-    // reports serialized as objects
     ...serializeReports(state)
   };
 
   try{
-    await db.collection("months").doc(key).set(payload, { merge:true });
+    await setDoc(doc(db, "months", key), payload, { merge:true });
+    // console.log("Saved", key);
   }catch(e){
     console.error("[saveMonth] error", e);
   }
 }
-
 function attachMonthListener(key){
   if(unsubscribeMonth){ unsubscribeMonth(); unsubscribeMonth=null; }
-  unsubscribeMonth = db.collection("months").doc(key).onSnapshot((snap)=>{
-    if(!snap.exists) return;
+  unsubscribeMonth = onSnapshot(doc(db, "months", key), (snap)=>{
+    if(!snap.exists()) return;
     const d = snap.data() || {};
     if(!monthStore[key]) monthStore[key]={};
 
@@ -543,7 +553,27 @@ function attachMonthListener(key){
   });
 }
 
-/* ---------------- Init ---------------- */
+/* ========== Init ========== */
+function renderMonthPublic(){ renderMonth(); }
+function prevMonthPublic(){ prevMonth(); }
+function nextMonthPublic(){ nextMonth(); }
+function addRowsPublic(){ addRows(); }
+function delRowsPublic(){ delRows(); }
+function showPagePublic(id){ showPage(id); }
+function renderReportsPublic(){ renderReports(); }
+
+// Expose functions for inline onclick handlers
+window.prevMonth = prevMonthPublic;
+window.nextMonth = nextMonthPublic;
+window.addRows = addRowsPublic;
+window.delRows = delRowsPublic;
+window.showPage = showPagePublic;
+window.renderReports = renderReportsPublic;
+
+// Color palette needs applyColor exposed for swatches
+window.applyColor = function(color){ applyColor(color); };
+
+// Finally render current month
 renderMonth();
 </script>
 </body>
