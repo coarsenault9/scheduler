@@ -69,72 +69,42 @@
     <div id="summarySite"></div>
   </div>
 
-<!-- Firebase SDK -->
+<!-- 🔌 Firebase SDK (kept separate; sets window.firebaseBits) -->
 <script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
-import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+  import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+  import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
 
-// 🔑 Firebase config
-const firebaseConfig = {
-  apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
-  authDomain: "crcscheduler.firebaseapp.com",
-  projectId: "crcscheduler",
-  storageBucket: "crcscheduler.firebasestorage.app",
-  messagingSenderId: "865356677041",
-  appId: "1:865356677041:web:002d88c85f00140088c790",
-  measurementId: "G-00XV2C5HDL"
-};
+  const firebaseConfig = {
+    apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
+    authDomain: "crcscheduler.firebaseapp.com",
+    projectId: "crcscheduler",
+    storageBucket: "crcscheduler.firebasestorage.app",
+    messagingSenderId: "865356677041",
+    appId: "1:865356677041:web:002d88c85f00140088c790",
+    measurementId: "G-00XV2C5HDL"
+  };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-signInAnonymously(getAuth(app)).catch(console.error);
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  signInAnonymously(getAuth(app)).catch(console.error);
 
-// Expose for inline script
-window.firebaseBits = { db, doc, setDoc, getDoc, onSnapshot };
+  // expose for the non-module script below
+  window.firebaseBits = { db, doc, setDoc, getDoc, onSnapshot };
 </script>
 
 <script>
-/* ---------------- Shared State ---------------- */
+/* ---------------- Shared State (YOUR BASE) ---------------- */
 let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
+
+/* ✅ Added for Firebase realtime */
 let unwatchMonth=null, unwatchDirectory=null;
+const { db, doc, setDoc, getDoc, onSnapshot } = window.firebaseBits || {};
 
-const { db, doc, setDoc, getDoc, onSnapshot } = window.firebaseBits;
-
-/* ---------------- Firebase Helpers ---------------- */
-async function saveMonth(key) {
-  const state = monthStore[key];
-  if (!state) return;
-  const calendar = (state.calendar||[]).map(w=>w.map(d=>({date:d.date.toISOString(),inMonth:d.inMonth})));
-  await setDoc(doc(db,"months",key), {
-    data: state.data,
-    meta: state.meta,
-    bodyRows: state.bodyRows,
-    calendar
-  }, { merge:true });
-}
-async function loadMonth(key) {
-  const snap = await getDoc(doc(db,"months",key));
-  if (!snap.exists()) return false;
-  const s=snap.data();
-  const calendar = (s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
-  monthStore[key]={data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar,
-    shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-  return true;
-}
-async function saveDirectory() {
-  const rows = directoryHot.getData();
-  await setDoc(doc(db,"directory","main"), { rows }, { merge:true });
-}
-async function loadDirectory() {
-  const snap = await getDoc(doc(db,"directory","main"));
-  if (snap.exists()) directoryHot.loadData(snap.data().rows);
-}
-
-/* ---------------- Page Switching ---------------- */
+/* ---------------- Page Switching (YOUR BASE) ---------------- */
 function showPage(id){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -142,7 +112,7 @@ function showPage(id){
 }
 function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
 
-/* ---------------- Calendar Helpers ---------------- */
+/* ---------------- Calendar Helpers (YOUR BASE) ---------------- */
 function startOfCalendar(year, monthIdx){
   const first=new Date(year,monthIdx,1);
   const dow=(first.getDay()+6)%7; // Mon=0
@@ -164,20 +134,23 @@ function buildWeekMatrix(year, monthIdx, weeks){
     for(let d=0;d<DAYS_PER_WEEK;d++){
       const cell=new Date(start);
       cell.setDate(start.getDate()+w*7+d);
-      row.push({date:new Date(cell),inMonth:cell.getMonth()===monthIdx});
+      row.push({
+        date: new Date(cell),
+        inMonth: cell.getMonth()===monthIdx
+      });
     }
     matrix.push(row);
   }
   return matrix;
 }
 
-/* ---------------- Data ---------------- */
+/* ---------------- Data (YOUR BASE) ---------------- */
 function buildDataFor(y,m,weeks,br){
   const rows=br.reduce((s,b)=>s+1+b,0);
   return Array.from({length:rows},()=>Array(TOTAL_COLS).fill(""));
 }
 
-/* ---------------- Renderer ---------------- */
+/* ---------------- Renderer (YOUR BASE) ---------------- */
 function colorRenderer(instance, td, row, col, prop, value, cellProps){
   Handsontable.renderers.TextRenderer.apply(this, arguments);
 
@@ -191,7 +164,8 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
     const weekIdx = weekIndexForRow(row);
     const dayIdx = Math.floor(col / 2);
     if (weekIdx >= 0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth) {
-      td.style.background = "#f0f0f0"; td.style.color="#999";
+      td.style.background = "#f0f0f0";
+      td.style.color = "#999";
     }
   }
 
@@ -202,33 +176,66 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
   if(col%2===1) td.classList.add('day-sep');
 }
 
-/* ---------------- Scheduler ---------------- */
+/* ---------------- Scheduler (YOUR BASE) ---------------- */
 function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
 function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
+/* ✅ Firebase helpers (ADDED) */
+async function saveMonth(key) {
+  if (!window.firebaseBits) return;      // allow offline/local usage
+  const state = monthStore[key];
+  if (!state) return;
+  const calendar = (state.calendar||[]).map(w=>w.map(d=>({date:d.date.toISOString(),inMonth:d.inMonth})));
+  await setDoc(doc(db,"months",key), {
+    data: state.data,
+    meta: state.meta,
+    bodyRows: state.bodyRows,
+    calendar
+  }, { merge:true });
+}
+async function loadMonth(key) {
+  if (!window.firebaseBits) return false;
+  const snap = await getDoc(doc(db,"months",key));
+  if (!snap.exists()) return false;
+  const s=snap.data();
+  const calendar = (s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
+  monthStore[key]={data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar,
+    shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+  return true;
+}
+
+/* 🔧 renderMonth changed to async ONLY to allow load/save; behavior unchanged */
 async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
+
   if(!monthStore[key]){
-    const loaded=await loadMonth(key);
+    // Try to load from Firestore first
+    const loaded = await loadMonth(key);
     if(!loaded){
+      // Build fresh exactly as your base did
       const br=Array(weeks).fill(8);
       const data=buildDataFor(y,m,weeks,br);
       const matrix=buildWeekMatrix(y,m,weeks);
+      const dayMeta={}; // (kept for compatibility if you used it elsewhere)
       let acc=0;
       for(let w=0;w<weeks;w++){
         for(let d=0;d<DAYS_PER_WEEK;d++){
           const c=d*COLS_PER_DAY;
           data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();
+          dayMeta[`${acc}:${c}`]=matrix[w][d];
         }
         acc+=1+br[w];
       }
-      monthStore[key]={data,bodyRows:br,meta:{},calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+      monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+      // Save initial month so realtime clients can see it
       await saveMonth(key);
     }
   }
+
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
+
   if(hot) hot.destroy();
   hot=new Handsontable(document.getElementById('grid'),{
     data:monthStore[key].data,
@@ -238,25 +245,55 @@ async function renderMonth(){
     contextMenu:true,
     cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterChange:(c,s)=>{if(s!=='loadData') saveMonth(key);}
-  });
-
-  if(unwatchMonth){unwatchMonth(); unwatchMonth=null;}
-  unwatchMonth=onSnapshot(doc(db,"months",key),(snap)=>{
-    if(snap.exists()){
-      const s=snap.data();
-      const calendar=(s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
-      monthStore[key]={...monthStore[key],data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar};
-      if(hot) hot.loadData(monthStore[key].data);
-      bodyRows=monthStore[key].bodyRows.slice();
+    afterCopy:(data,coords)=>{clipboardMeta=[];
+      coords.forEach(({startRow,startCol,endRow,endCol})=>{
+        for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
+          const key=monthKey(current.getFullYear(),current.getMonth());
+          const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
+          clipboardMeta.push({r:r-startRow,c:c-startCol,color});
+        }
+      });
+    },
+    afterPaste:(data,coords)=>{
+      if(!clipboardMeta)return;
+      const {startRow,startCol}=coords[0];
+      const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{
+        if(item.color){
+          const rr=startRow+item.r,cc=startCol+item.c;
+          if(!monthStore[key].meta) monthStore[key].meta={};
+          monthStore[key].meta[`${rr}:${cc}`]=item.color;
+        }
+      });
       hot.render();
+      saveMonth(key);
+    },
+    afterChange:(changes, source)=>{
+      if(source!=='loadData'){
+        // Persist edits
+        saveMonth(key);
+      }
     }
   });
+
+  // 🔴 Realtime listener for the current month (safe: only load if snapshot exists)
+  if (window.firebaseBits) {
+    if(unwatchMonth){unwatchMonth(); unwatchMonth=null;}
+    unwatchMonth = onSnapshot(doc(db,"months",key),(snap)=>{
+      if(!snap.exists()) return;
+      const s=snap.data();
+      const calendar=(s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
+      // Replace state, then refresh grid data (DON’T recreate table)
+      monthStore[key]={...monthStore[key],data:s.data||[],meta:s.meta||{},bodyRows:s.bodyRows||[],calendar};
+      bodyRows=monthStore[key].bodyRows.slice();
+      if(hot) { hot.loadData(monthStore[key].data); hot.render(); }
+    });
+  }
 }
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
 function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
 
-/* ---------------- Colors ---------------- */
+/* ---------------- Colors (YOUR BASE) ---------------- */
 const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8","#e8eaed","#d50000","#c51162","#aa00ff","#304ffe","#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
 (function(){const p=document.getElementById('palette');colors.forEach(c=>{let sw=document.createElement('div');sw.className='swatch';sw.style.background=c;sw.onclick=()=>applyColor(c);p.appendChild(sw);});let clr=document.createElement('div');clr.className='swatch clear';clr.textContent='×';clr.onclick=()=>applyColor(null);p.appendChild(clr);})();
 function applyColor(color){
@@ -267,13 +304,14 @@ function applyColor(color){
     for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
       if(color) monthStore[key].meta[`${r}:${c}`]=color; else delete monthStore[key].meta[`${r}:${c}`];
     }}
-  hot.render(); saveMonth(key);
+  hot.render();
+  saveMonth(key);
 }
 
-/* ---------------- Add/Delete Rows ---------------- */
+/* ---------------- Add/Delete Rows (YOUR BASE) ---------------- */
 function shiftMeta(meta, startRow, delta){
   const newMeta={};
-  Object.entries(meta).forEach(([k,v])=>{
+  Object.entries(meta||{}).forEach(([k,v])=>{
     let [r,c]=k.split(":").map(Number);
     if(r>=startRow) r+=delta;
     newMeta[`${r}:${c}`]=v;
@@ -295,19 +333,39 @@ function delRows(){const n=parseInt(document.getElementById('rowsToModify').valu
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
   renderMonth(); saveMonth(key);}
 
-/* ---------------- Directory ---------------- */
+/* ---------------- Directory (YOUR BASE; + save/load) ---------------- */
 directoryHot=new Handsontable(document.getElementById('directory'),{
   data:[["","",""]],
   colHeaders:["Name","Email","Phone"], rowHeaders:true, minSpareRows:1,
   contextMenu:true, licenseKey:'non-commercial-and-evaluation',
-  afterChange:(c,s)=>{if(s!=="loadData") saveDirectory();}
+  afterChange:(c,s)=>{ if(s!=="loadData") saveDirectory(); }
 });
-loadDirectory();
-if(unwatchDirectory){unwatchDirectory(); unwatchDirectory=null;}
-unwatchDirectory=onSnapshot(doc(db,"directory","main"),(snap)=>{if(snap.exists()){const {rows}=snap.data();if(rows) directoryHot.loadData(rows);}});
 function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
 
-/* ---------------- Process Schedule & Reports ---------------- */
+/* ✅ Directory persistence + realtime */
+async function saveDirectory(){
+  if (!window.firebaseBits) return;
+  const rows = directoryHot.getData();
+  await setDoc(doc(db,"directory","main"), { rows }, { merge:true });
+}
+async function loadDirectory(){
+  if (!window.firebaseBits) return;
+  const snap = await getDoc(doc(db,"directory","main"));
+  if (snap.exists()) directoryHot.loadData(snap.data().rows);
+}
+// kick off directory load + subscribe
+loadDirectory();
+if (window.firebaseBits) {
+  if(unwatchDirectory){unwatchDirectory(); unwatchDirectory=null;}
+  unwatchDirectory = onSnapshot(doc(db,"directory","main"), (snap)=>{
+    if(snap.exists()){
+      const { rows } = snap.data();
+      if (rows) directoryHot.loadData(rows);
+    }
+  });
+}
+
+/* ---------------- Process Schedule (YOUR BASE) ---------------- */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -347,7 +405,7 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
-      // 🔹 Skip Travel/Stay/Drive rows
+      // Skip Travel/Stay/Drive rows
       const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
       if (forbidden.includes(study.toUpperCase())) {
         r++;
@@ -424,7 +482,7 @@ function parseSchedule(y, m) {
   state.summarySite = Object.entries(siteVisits).map(([site, dates]) => [site, dates.size]);
 }
 
-/* ---------------- Reports ---------------- */
+/* ---------------- Reports (YOUR BASE) ---------------- */
 function refreshMonthSelect(){
   const sel=document.getElementById('monthSelect');
   sel.innerHTML="";
@@ -468,7 +526,7 @@ function renderTable(id,hdrs,rows){
   document.getElementById(id).innerHTML = html;
 }
 
-/* ---------------- Init ---------------- */
+/* ---------------- Init (YOUR BASE) ---------------- */
 renderMonth();
 </script>
 </body>
