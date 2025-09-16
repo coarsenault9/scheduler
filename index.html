@@ -2,382 +2,403 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Monthly Scheduler — Persistent Data, Colors & Logs</title>
-
+<title>Scheduler App</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
-
 <style>
   body { font-family: Arial, sans-serif; margin: 18px; }
-  h1 { margin: 0 0 8px; }
-  .toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin: 10px 0; }
-  .toolbar input[type="number"] { width: 70px; }
-  .palette { display:flex; flex-wrap:wrap; gap:6px; }
+  nav { margin-bottom: 12px; }
+  nav button { margin-right: 8px; }
+  .page { display: none; }
+  .page.active { display: block; }
+  .palette { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
   .swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
   .swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
-  #grid { margin: 8px 0 16px; }
-
   .handsontable th { background:#eee !important; }
-  .date-row td { background:#e0e0e0 !important; font-weight:600; }
-  .week-sep td { border-bottom: 3px solid #000 !important; }
   td.day-sep { border-right: 1px solid #aaa !important; }
-
-  table.out { border-collapse: collapse; width: 100%; margin-top: 10px; }
-  table.out th, table.out td { border: 1px solid #ccc; padding: 6px; font-size: 12px; }
-  table.out th { background: #eee; }
+  table.out { border-collapse: collapse; width:100%; margin-top:10px; }
+  table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
+  table.out th { background:#eee; }
 </style>
 </head>
 <body>
-  <h1>Monthly Scheduler (Persistent)</h1>
-  <div class="toolbar">
-    <button id="prev">◀ Prev</button>
-    <span id="label" style="font-weight:600"></span>
-    <button id="next">Next ▶</button>
+  <h1>Scheduler App</h1>
+  <nav>
+    <button onclick="showPage('schedulerPage')">Scheduler</button>
+    <button onclick="showPage('directoryPage')">Directory</button>
+    <button onclick="showPage('reportsPage')">Reports</button>
+  </nav>
 
-    <span style="margin-left:12px;"><b>Fill color:</b></span>
-    <div class="palette" id="palette"></div>
-
-    <span style="margin-left:12px;"><b>Add rows to this week:</b></span>
-    <input id="rowsToAdd" type="number" min="1" value="5">
-    <button id="addRowsBtn">Add rows</button>
-
-    <button id="process">Process → ShiftLog & Summary</button>
+  <!-- Scheduler Page -->
+  <div id="schedulerPage" class="page active">
+    <h2>Monthly Scheduler</h2>
+    <div class="toolbar">
+      <button onclick="prevMonth()">◀ Prev</button>
+      <span id="monthLabel"></span>
+      <button onclick="nextMonth()">Next ▶</button>
+      <span style="margin-left:12px;"><b>Fill color:</b></span>
+      <div class="palette" id="palette"></div>
+      <span style="margin-left:12px;"><b>Rows:</b></span>
+      <input id="rowsToModify" type="number" min="1" value="1" style="width:60px;">
+      <button onclick="addRows()">+ Add</button>
+      <button onclick="delRows()">– Delete</button>
+    </div>
+    <div id="grid"></div>
   </div>
 
-  <div id="grid"></div>
+  <!-- Directory Page -->
+  <div id="directoryPage" class="page">
+    <h2>Email Directory</h2>
+    <div id="directory"></div>
+  </div>
 
-  <h2>ShiftLog</h2>
-  <div id="shiftLog"></div>
-
-  <h2>Summary</h2>
-  <div id="summary"></div>
+  <!-- Reports Page -->
+  <div id="reportsPage" class="page">
+    <h2>Reports</h2>
+    <label>Choose Month: 
+      <select id="monthSelect"></select>
+    </label>
+    <button onclick="renderReports()">Generate Report</button>
+    <h3>ShiftLog</h3>
+    <div id="shiftLog"></div>
+    <h3>Employee Summary</h3>
+    <div id="summary"></div>
+    <h3>Study Visits</h3>
+    <div id="summaryStudy"></div>
+    <h3>Site Visits</h3>
+    <div id="summarySite"></div>
+  </div>
 
 <script>
-/* ---------- Helpers ---------- */
-const DOW = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-function startOfCalendar(year, monthIdx) {
-  const first = new Date(year, monthIdx, 1);
-  const dow = (first.getDay()+6)%7;
-  const d = new Date(first);
-  d.setDate(first.getDate() - dow);
+/* ---------------- Shared State ---------------- */
+let monthStore={}, current=new Date(), hot, directoryHot;
+let lastSel=null, clipboardMeta=null;
+const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
+let bodyRows=[];
+
+/* ---------------- Page Switching ---------------- */
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  if(id==='reportsPage') refreshMonthSelect();
+}
+function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
+
+/* ---------------- Calendar Helpers ---------------- */
+function startOfCalendar(year, monthIdx){
+  const first=new Date(year,monthIdx,1);
+  const dow=(first.getDay()+6)%7; // Mon=0
+  const d=new Date(first);
+  d.setDate(first.getDate()-dow);
   return d;
 }
-function sixWeekMatrix(year, monthIdx) {
-  const start = startOfCalendar(year, monthIdx);
-  const weeks = [];
-  for (let w=0; w<6; w++) {
-    const row = [];
-    for (let d=0; d<7; d++) {
-      const cell = new Date(start);
-      cell.setDate(start.getDate() + w*7 + d);
-      row.push(cell);
-    }
-    weeks.push(row);
-  }
-  return weeks;
+function numWeeks(year, monthIdx){
+  const start=startOfCalendar(year,monthIdx);
+  const end=new Date(year,monthIdx+1,0);
+  const diff=Math.ceil((end-start)/86400000)+1;
+  return Math.ceil(diff/7);
 }
-function fmtDate(d) {
-  const day = String(d.getDate()).padStart(2,'0');
-  const mon = d.toLocaleString('default',{month:'short'});
-  const yr  = d.getFullYear();
-  return `${day}-${mon}-${yr}`;
-}
-
-/* ---------- Globals ---------- */
-const container = document.getElementById('grid');
-let hot, current = new Date();
-let lastSel = null;
-let clipboardMeta = null; // store copied colors
-
-/** Per-month store: { bodyRows, data, meta, shiftLog, summary } */
-let monthStore = {};
-let currentKey = null;
-
-const NUM_WEEKS = 6;
-const COLS_PER_DAY = 2; 
-const DAYS_PER_WEEK = 7;
-const TOTAL_COLS = DAYS_PER_WEEK * COLS_PER_DAY;
-const DEFAULT_BODY_ROWS = [11,11,11,11,11,11];
-
-const colors = ["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb",
-                "#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8",
-                "#e8eaed","#d50000","#c51162","#aa00ff","#304ffe",
-                "#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
-
-let bodyRows = DEFAULT_BODY_ROWS.slice();
-
-/* ---------- Store helpers ---------- */
-function monthKey(y,m) { return `${y}-${m}`; }
-function initMonthState(y,m) {
-  const state = {
-    bodyRows: DEFAULT_BODY_ROWS.slice(),
-    data: buildDataFor(y,m, DEFAULT_BODY_ROWS),
-    meta: {},
-    shiftLog: [],
-    summary: []
-  };
-  monthStore[monthKey(y,m)] = state;
-  return state;
-}
-function getMonthState(y,m) {
-  const key = monthKey(y,m);
-  if (!monthStore[key]) return initMonthState(y,m);
-  return monthStore[key];
-}
-function saveCurrentMonth() {
-  if (!hot || !currentKey) return;
-  const state = monthStore[currentKey];
-  state.data = hot.getSourceData();
-  state.bodyRows = bodyRows.slice();
-}
-
-/* ---------- Layout helpers ---------- */
-function weekStarts() {
-  const starts = [];
-  let acc = 0;
-  for (let i=0;i<NUM_WEEKS;i++) {
-    starts.push(acc);
-    acc += 1 + bodyRows[i];
-  }
-  return starts;
-}
-function weekIndexForRow(rowIdx) {
-  const starts = weekStarts();
-  for (let i=0;i<NUM_WEEKS;i++) {
-    const start = starts[i];
-    const end = start + 1 + bodyRows[i] - 1;
-    if (rowIdx >= start && rowIdx <= end) return i;
-  }
-  return -1;
-}
-function buildDataFor(y, m, bodyRowsArr) {
-  const rows = bodyRowsArr.reduce((s,b)=>s+1+b,0);
-  const data = Array.from({length: rows}, () => Array(TOTAL_COLS).fill(""));
-  const matrix = sixWeekMatrix(y,m);
-  let acc=0;
-  for (let w=0; w<NUM_WEEKS; w++) {
-    const headerRow = acc;
-    for (let d=0; d<DAYS_PER_WEEK; d++) {
-      const cL = d*COLS_PER_DAY;
-      const date = matrix[w][d];
-      if (date.getMonth() === m) data[headerRow][cL] = String(date.getDate());
-    }
-    acc += 1+bodyRowsArr[w];
-  }
-  return data;
-}
-
-/* ---------- Color meta ---------- */
-function rcKey(r,c){ return `${r}:${c}`; }
-function applyAllMeta(state) {
-  for (const [key, meta] of Object.entries(state.meta)) {
-    if (!meta) continue;
-    const [r,c] = key.split(':').map(Number);
-    if (meta.bgColor) hot.setCellMeta(r,c,'bgColor',meta.bgColor);
-  }
-  hot.render();
-}
-
-/* ---------- Renderer ---------- */
-function colorRenderer(instance, td, row, col, prop, value, cellProps) {
-  Handsontable.renderers.TextRenderer.apply(this, arguments);
-  const meta = instance.getCellMeta(row,col);
-  if (weekStarts().includes(row)) {
-    td.style.backgroundColor = "#e0e0e0";
-    td.style.fontWeight = "600";
-    td.style.color = "#000";
-  } else if (meta.bgColor) {
-    td.style.backgroundColor = meta.bgColor;
-    td.style.color = "#000";
-  } else {
-    td.style.backgroundColor = "";
-    td.style.color = "";
-  }
-  if (col % 2 === 1) td.classList.add('day-sep');
-}
-
-/* ---------- Render month ---------- */
-function renderMonth() {
-  const y = current.getFullYear();
-  const m = current.getMonth();
-  currentKey = monthKey(y,m);
-  document.getElementById("label").textContent =
-    `${current.toLocaleString('default',{month:'long'})} ${y}`;
-  const state = getMonthState(y,m);
-  bodyRows = state.bodyRows.slice();
-  if (hot) hot.destroy();
-  hot = new Handsontable(container, {
-    data: state.data,
-    colHeaders: false,
-    rowHeaders: true,
-    licenseKey: 'non-commercial-and-evaluation',
-    columns: Array.from({length: TOTAL_COLS}, () => ({ type:'text' })),
-    nestedHeaders: [DOW.map(day => ({ label: day, colspan: COLS_PER_DAY }))],
-    contextMenu: true,
-    manualColumnResize: true,
-    manualRowResize: true,
-    height: 'auto',
-    outsideClickDeselects: false,
-    cells: (row,col)=>{
-      const props={ renderer: colorRenderer };
-      const starts = weekStarts();
-      if (starts.includes(row)) props.readOnly = true;
-      for (let w=0; w<NUM_WEEKS; w++) {
-        const lastRow = starts[w] + 1 + bodyRows[w] - 1;
-        if (row===lastRow) props.className = (props.className||"")+" week-sep";
-      }
-      return props;
-    },
-    afterSelectionEnd: (r1,c1,r2,c2)=>{ lastSel=[r1,c1,r2,c2]; },
-    afterCopy: (data,coords)=>{ // capture colors
-      clipboardMeta = [];
-      coords.forEach(({startRow,startCol,endRow,endCol})=>{
-        for(let r=startRow;r<=endRow;r++){
-          for(let c=startCol;c<=endCol;c++){
-            const bg=hot.getCellMeta(r,c).bgColor;
-            clipboardMeta.push({r:r-startRow,c:c-startCol,bg:bg});
-          }
-        }
-      });
-    },
-    afterPaste: (data,coords)=>{
-      if(!clipboardMeta) return;
-      const {startRow,startCol} = coords[0];
-      const state = monthStore[currentKey];
-      clipboardMeta.forEach(item=>{
-        if(item.bg){
-          const rr=startRow+item.r, cc=startCol+item.c;
-          hot.setCellMeta(rr,cc,'bgColor',item.bg);
-          state.meta[rcKey(rr,cc)]={bgColor:item.bg};
-        }
-      });
-      hot.render();
-    }
-  });
-  applyAllMeta(state);
-  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],state.shiftLog);
-  renderTable("summary",["Employee","Count"],state.summary);
-}
-
-/* ---------- Color fill ---------- */
-function applyColor(color){
-  const selection = lastSel || hot.getSelectedLast();
-  if(!selection){alert("Select cells first");return;}
-  const [r1,c1,r2,c2]=selection;
-  const starts=weekStarts();
-  const state=monthStore[currentKey];
-  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){
-    if(starts.includes(r))continue;
-    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
-      hot.setCellMeta(r,c,'bgColor',color||null);
-      if(color) state.meta[rcKey(r,c)]={bgColor:color};
-      else delete state.meta[rcKey(r,c)];
-    }
-  }
-  hot.render();
-}
-
-/* ---------- Palette ---------- */
-(function(){
-  const p=document.getElementById('palette');
-  colors.forEach(c=>{
-    const sw=document.createElement('div');
-    sw.className='swatch';
-    sw.style.background=c;
-    sw.onclick=()=>applyColor(c);
-    p.appendChild(sw);
-  });
-  const clr=document.createElement('div');
-  clr.className='swatch clear';
-  clr.textContent='×';
-  clr.title='Clear fill';
-  clr.onclick=()=>applyColor(null);
-  p.appendChild(clr);
-})();
-
-/* ---------- Row add ---------- */
-function addRowsToCurrentWeek(n=1){
-  const selection=lastSel||hot.getSelectedLast();
-  const selRow=selection?Math.min(selection[0],selection[2]):0;
-  const w=weekIndexForRow(selRow);
-  if(w<0){alert('Select inside a week');return;}
-  const state=monthStore[currentKey];
-  const starts=weekStarts();
-  const insertAt=starts[w]+1;
-  bodyRows[w]+=n;
-  state.bodyRows=bodyRows.slice();
-  state.data.splice(insertAt,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
-  hot.loadData(state.data);
-  applyAllMeta(state);
-}
-
-/* ---------- Process schedule ---------- */
-function processSchedule(){
-  const y=current.getFullYear(), m=current.getMonth();
-  const matrix=sixWeekMatrix(y,m);
-  const data=hot.getData();
-  const shiftLog=[], summary={};
-  const starts=weekStarts();
-  for(let w=0;w<NUM_WEEKS;w++){
-    const headerRow=starts[w];
-    const startRow=headerRow+1;
-    const endRow=headerRow+bodyRows[w];
+function buildWeekMatrix(year, monthIdx, weeks){
+  const start=startOfCalendar(year,monthIdx);
+  const matrix=[];
+  for(let w=0;w<weeks;w++){
+    const row=[];
     for(let d=0;d<DAYS_PER_WEEK;d++){
-      const cL=d*COLS_PER_DAY,cR=cL+1;
-      const date=matrix[w][d];
-      if(date.getMonth()!==m) continue;
-      const dateStr=fmtDate(date);
-      let r=startRow;
-      while(r<=endRow){
-        const study=(data[r][cL]||"").trim();
-        const visit=(data[r][cR]||"").trim();
-        if(study&&visit){
-          let rr=r+1;
-          while(rr<=endRow){
-            const left=(data[rr][cL]||"").trim();
-            if(left.toUpperCase()==="INV"||left==="")break;
-            rr++;
-          }
-          let pi="",site="";
-          if(rr<=endRow&&(data[rr][cL]||"").trim().toUpperCase()==="INV"){
-            pi=(data[rr][cR]||"").trim(); rr++;
-          }
-          if(rr<=endRow&&(data[rr][cL]||"").trim()==="Site"){
-            site=(data[rr][cR]||"").trim(); rr++;
-          }
-          for(let x=r+1;x<rr;x++){
-            const role=(data[x][cL]||"").trim();
-            const emp=(data[x][cR]||"").trim();
-            if(!role||!emp)continue;
-            if(["INV","SITE","TRAVEL","STAY","DRIVE"].includes(role.toUpperCase()))continue;
-            shiftLog.push([dateStr,study,visit,role,emp,"",site,pi]);
-            summary[emp]=(summary[emp]||0)+1;
-          }
-          r=rr;
-        } else r++;
-      }
+      const cell=new Date(start);
+      cell.setDate(start.getDate()+w*7+d);
+      row.push({
+        date: new Date(cell),
+        inMonth: cell.getMonth()===monthIdx
+      });
+    }
+    matrix.push(row);
+  }
+  return matrix;
+}
+
+/* ---------------- Data ---------------- */
+function buildDataFor(y,m,weeks,br){
+  const rows=br.reduce((s,b)=>s+1+b,0);
+  return Array.from({length:rows},()=>Array(TOTAL_COLS).fill(""));
+}
+
+/* ---------------- Renderer ---------------- */
+function colorRenderer(instance, td, row, col, prop, value, cellProps){
+  Handsontable.renderers.TextRenderer.apply(this, arguments);
+
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  const color=monthStore[key]?.meta?.[`${row}:${col}`];
+  if(color) td.style.background=color;
+
+  // Grey out full day columns outside the month
+  const state = monthStore[key];
+  if (state && state.calendar) {
+    const weekIdx = weekIndexForRow(row);
+    const dayIdx = Math.floor(col / 2);
+    if (weekIdx >= 0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth) {
+      td.style.background = "#f0f0f0";
+      td.style.color = "#999";
     }
   }
-  const sumRows=Object.entries(summary).map(([e,c])=>[e,c]);
-  const state=monthStore[currentKey];
-  state.shiftLog=shiftLog;
-  state.summary=sumRows;
-  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],shiftLog);
-  renderTable("summary",["Employee","Count"],sumRows);
-}
-function renderTable(id,headers,rows){
-  let html="<table class='out'><tr>"+headers.map(h=>`<th>${h}</th>`).join("")+"</tr>";
-  rows.forEach(r=>{html+="<tr>"+r.map(v=>`<td>${v||""}</td>`).join("")+"</tr>";});
-  html+="</table>";
-  document.getElementById(id).innerHTML=html;
+
+  if(weekStarts().includes(row)){
+    td.style.background="#e0e0e0";
+    td.style.fontWeight="600";
+  }
+  if(col%2===1) td.classList.add('day-sep');
 }
 
-/* ---------- Init ---------- */
-document.getElementById('prev').onclick=()=>{ saveCurrentMonth(); current.setMonth(current.getMonth()-1); renderMonth(); };
-document.getElementById('next').onclick=()=>{ saveCurrentMonth(); current.setMonth(current.getMonth()+1); renderMonth(); };
-document.getElementById('process').onclick=processSchedule;
-document.getElementById('addRowsBtn').onclick=()=>{ const n=parseInt(document.getElementById('rowsToAdd').value||'1',10); addRowsToCurrentWeek(Math.max(1,n)); };
+/* ---------------- Scheduler ---------------- */
+function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
+function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
+function renderMonth(){
+  const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
+  const weeks=numWeeks(y,m);
+  if(!monthStore[key]){
+    const br=Array(weeks).fill(8);
+    const data=buildDataFor(y,m,weeks,br);
+    const matrix=buildWeekMatrix(y,m,weeks);
+    const dayMeta={};
+    let acc=0;
+    for(let w=0;w<weeks;w++){
+      for(let d=0;d<DAYS_PER_WEEK;d++){
+        const c=d*COLS_PER_DAY;
+        data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();
+        dayMeta[`${acc}:${c}`]=matrix[w][d];
+      }
+      acc+=1+br[w];
+    }
+    monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+  }
+  bodyRows=monthStore[key].bodyRows.slice();
+  document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
+  if(hot) hot.destroy();
+  hot=new Handsontable(document.getElementById('grid'),{
+    data:monthStore[key].data,
+    colHeaders:false,rowHeaders:true,
+    columns:Array.from({length:TOTAL_COLS},()=>({type:'text'})),
+    licenseKey:'non-commercial-and-evaluation',
+    contextMenu:true,
+    cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
+    afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
+    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
+      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
+        const key=monthKey(current.getFullYear(),current.getMonth());
+        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
+        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
+      }});},
+    afterPaste:(data,coords)=>{if(!clipboardMeta)return;const {startRow,startCol}=coords[0];const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{if(item.color){const rr=startRow+item.r,cc=startCol+item.c;monthStore[key].meta[`${rr}:${cc}`]=item.color;}});
+      hot.render();}
+  });
+}
+function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
+function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
+
+/* ---------------- Colors ---------------- */
+const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8","#e8eaed","#d50000","#c51162","#aa00ff","#304ffe","#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
+(function(){const p=document.getElementById('palette');colors.forEach(c=>{let sw=document.createElement('div');sw.className='swatch';sw.style.background=c;sw.onclick=()=>applyColor(c);p.appendChild(sw);});let clr=document.createElement('div');clr.className='swatch clear';clr.textContent='×';clr.onclick=()=>applyColor(null);p.appendChild(clr);})();
+function applyColor(color){
+  const sel=lastSel||hot.getSelectedLast(); if(!sel)return;
+  const [r1,c1,r2,c2]=sel; const key=monthKey(current.getFullYear(),current.getMonth());
+  if(!monthStore[key].meta) monthStore[key].meta={};
+  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){ if(weekStarts().includes(r))continue;
+    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
+      if(color) monthStore[key].meta[`${r}:${c}`]=color; else delete monthStore[key].meta[`${r}:${c}`];
+    }}
+  hot.render();
+}
+
+/* ---------------- Add/Delete Rows ---------------- */
+function shiftMeta(meta, startRow, delta){
+  const newMeta={};
+  Object.entries(meta).forEach(([k,v])=>{
+    let [r,c]=k.split(":").map(Number);
+    if(r>=startRow) r+=delta;
+    newMeta[`${r}:${c}`]=v;
+  });
+  return newMeta;
+}
+function addRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
+  const sel=lastSel||hot.getSelectedLast(); if(!sel)return; const w=weekIndexForRow(sel[0]); if(w<0)return;
+  const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
+  bodyRows[w]+=n; monthStore[key].bodyRows=bodyRows.slice();
+  monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
+  monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);
+  renderMonth();}
+function delRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
+  const sel=lastSel||hot.getSelectedLast(); if(!sel)return; const w=weekIndexForRow(sel[0]); if(w<0)return;
+  if(bodyRows[w]<=n)return; const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
+  bodyRows[w]-=n; monthStore[key].bodyRows=bodyRows.slice();
+  monthStore[key].data.splice(start,n);
+  monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
+  renderMonth();}
+
+/* ---------------- Directory ---------------- */
+directoryHot=new Handsontable(document.getElementById('directory'),{
+  data:[["","",""]],
+  colHeaders:["Name","Email","Phone"], rowHeaders:true, minSpareRows:1,
+  contextMenu:true, licenseKey:'non-commercial-and-evaluation'
+});
+function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
+
+/* ---------------- Process Schedule ---------------- */
+function parseSchedule(y, m) {
+  const key = monthKey(y, m);
+  const state = monthStore[key];
+  if (!state) return;
+
+  const data = state.data;
+  const br = state.bodyRows;
+  const calendar = state.calendar;
+
+  function startsFrom(brArr) {
+    const out = []; let acc = 0;
+    for (let i = 0; i < brArr.length; i++) { out.push(acc); acc += 1 + brArr[i]; }
+    return out;
+  }
+  const starts = startsFrom(br);
+  function weekIndexForRowLocal(rowIdx) {
+    for (let i = 0; i < br.length; i++) {
+      if (rowIdx >= starts[i] && rowIdx <= starts[i] + br[i]) return i;
+    }
+    return -1;
+  }
+  function formatDate(d) {
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  const shiftLog = [];
+  const summaryShifts = {};
+  const studyVisits = {};
+  const siteVisits = {};
+  const emailMap = getDirectoryMap();
+
+  for (let c = 0; c < TOTAL_COLS; c += 2) {
+    let r = 0;
+    const maxRow = data.length;
+
+    while (r < maxRow) {
+      const study = (data[r][c] || "").trim();
+      const visit = (data[r][c + 1] || "").trim();
+
+      if (study && visit) {
+        const wk = weekIndexForRowLocal(r);
+        const dayIdx = Math.floor(c / 2);
+        let dateStr = `${y}-${m + 1}`;
+        let dateObj = null;
+        if (wk >= 0 && calendar && calendar[wk] && calendar[wk][dayIdx]) {
+          dateObj = calendar[wk][dayIdx].date;
+          dateStr = formatDate(dateObj);
+        }
+
+        let rr = r + 1;
+        let pi = "";
+        let site = "";
+        const roles = [];
+
+        while (rr < maxRow) {
+          const left = (data[rr][c] || "").trim();
+          const right = (data[rr][c + 1] || "").trim();
+          const leftU = left.toUpperCase();
+
+          if (!left && !right) { rr++; continue; }
+          if (leftU === "INV") { pi = right; rr++; continue; }
+          if (left === "Site") { site = right; rr++; break; }
+
+          if (right && !["INV","SITE","TRAVEL","STAY","DRIVE"].includes(leftU)) {
+            roles.push({ role: left, emp: right });
+          }
+          rr++;
+        }
+
+        // ShiftLog entries
+        roles.forEach(({ role, emp }) => {
+          const email = emailMap[emp.toLowerCase()] || "";
+          shiftLog.push([dateStr, study, visit, role, emp, email, site, pi]);
+          summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
+        });
+
+        // Unique visits counting
+        if (dateObj) {
+          const dKey = formatDate(dateObj);
+
+          if (!studyVisits[study]) studyVisits[study] = {};
+          if (!studyVisits[study][dKey]) studyVisits[study][dKey] = new Set();
+          if (site) studyVisits[study][dKey].add(site);
+
+          if (site) {
+            if (!siteVisits[site]) siteVisits[site] = new Set();
+            siteVisits[site].add(dKey);
+          }
+        }
+
+        r = rr;
+        continue;
+      }
+      r++;
+    }
+  }
+
+  state.shiftLog = shiftLog;
+  state.summary = Object.entries(summaryShifts);
+
+  state.summaryStudy = Object.entries(studyVisits).map(([study, dates]) => {
+    let total = 0;
+    Object.values(dates).forEach(set => total += set.size);
+    return [study, total];
+  });
+
+  state.summarySite = Object.entries(siteVisits).map(([site, dates]) => [site, dates.size]);
+}
+
+/* ---------------- Reports ---------------- */
+function refreshMonthSelect(){
+  const sel=document.getElementById('monthSelect');
+  sel.innerHTML="";
+  // Keep months in chronological order
+  Object.keys(monthStore).sort().forEach(k=>{
+    const o=document.createElement('option');
+    o.value=k; o.textContent=k; sel.appendChild(o);
+  });
+}
+
+function renderReports(){
+  const sel=document.getElementById('monthSelect').value;
+  if(!sel) return;
+  const [y,m]=sel.split('-').map(Number);
+  parseSchedule(y, m-1);
+  const s=monthStore[sel];
+
+  renderTable("shiftLog",
+    ["Date","Study","Visit","Role","Employee","Email","Site","PI"],
+    s.shiftLog
+  );
+  renderTable("summary",
+    ["Employee","Count"],
+    s.summary
+  );
+  renderTable("summaryStudy",
+    ["Study","Unique Visits"],
+    s.summaryStudy
+  );
+  renderTable("summarySite",
+    ["Site","Unique Visits"],
+    s.summarySite
+  );
+}
+
+function renderTable(id,hdrs,rows){
+  let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
+  rows.forEach(r=>{
+    html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>";
+  });
+  html += "</table>";
+  document.getElementById(id).innerHTML = html;
+}
+
+/* ---------------- Init ---------------- */
 renderMonth();
 </script>
 </body>
