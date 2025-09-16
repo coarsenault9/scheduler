@@ -69,7 +69,7 @@
     <div id="summarySite"></div>
   </div>
 
-<!-- Firebase SDK -->
+<!-- ===== Firebase SDK (ADDED) ===== -->
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
 import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
@@ -88,8 +88,10 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 signInAnonymously(getAuth(app)).then(()=>console.log("[auth] signed in")).catch(console.error);
 
+// expose to non-module script below
 window.firebaseBits = { db, doc, setDoc, onSnapshot };
 </script>
+<!-- ===== End Firebase SDK ===== -->
 
 <script>
 /* ---------------- Shared State ---------------- */
@@ -97,11 +99,12 @@ let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
-let unwatchMonth=null;
+let unwatchMonth=null; // (ADDED) to manage Firestore listener
 
-const { db, doc, setDoc, onSnapshot } = window.firebaseBits;
-
-/* Flatten/unflatten helpers for Firestore */
+/* ===== Firebase bindings (ADDED) ===== */
+const { db, doc, setDoc, onSnapshot } = window.firebaseBits || {};
+function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
+// Flatten/unflatten to avoid nested arrays error (ADDED)
 function flatten2D(arr){ return arr.map((row,i)=>({row:i, values: row.slice()})); }
 function unflatten2D(objs){ return (objs||[]).map(o=>o.values); }
 
@@ -111,7 +114,6 @@ function showPage(id){
   document.getElementById(id).classList.add('active');
   if(id==='reportsPage') refreshMonthSelect();
 }
-function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
 
 /* ---------------- Calendar Helpers ---------------- */
 function startOfCalendar(year, monthIdx){
@@ -159,6 +161,7 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
   const color=monthStore[key]?.meta?.[`${row}:${col}`];
   if(color) td.style.background=color;
 
+  // Grey out full day columns outside the month
   const state = monthStore[key];
   if (state && state.calendar) {
     const weekIdx = weekIndexForRow(row);
@@ -180,7 +183,7 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
 function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
 function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
-async function renderMonth(){
+function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
   if(!monthStore[key]){
@@ -198,7 +201,9 @@ async function renderMonth(){
       acc+=1+br[w];
     }
     monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-    await saveMonth(key);
+
+    // Create the Firestore doc now so listeners see it (ADDED)
+    saveMonth(key);
   }
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
@@ -211,35 +216,48 @@ async function renderMonth(){
     contextMenu:true,
     cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterChange:(ch,src)=>{ if(src!=="loadData") saveMonth(key); }
+    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
+      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
+        const key=monthKey(current.getFullYear(),current.getMonth());
+        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
+        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
+      }});},
+    // persist meta colors that were copied (ADDED: saveMonth)
+    afterPaste:(data,coords)=>{if(!clipboardMeta)return;const {startRow,startCol}=coords[0];const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{if(item.color){const rr=startRow+item.r,cc=startCol+item.c;monthStore[key].meta[`${rr}:${cc}`]=item.color;}});hot.render();saveMonth(key);},
+    // persist text edits (ADDED)
+    afterChange:(changes, source)=>{ if(source!=='loadData'){ const key=monthKey(current.getFullYear(),current.getMonth()); saveMonth(key);} }
   });
+
+  // Attach/refresh real-time listener for this month (ADDED)
   attachMonthListener(key);
 }
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
 function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
 
-/* ---------------- Firebase Save/Load ---------------- */
-async function saveMonth(key){
-  try {
-    const state=monthStore[key];
-    if(!state) return;
-    const cleanData = flatten2D(state.data);
-    const calendar=(state.calendar||[]).map(w=>w.map(d=>({date:d.date.toISOString(),inMonth:d.inMonth})));
-    await setDoc(doc(db,"months",key),{
-      data:cleanData,
-      meta:state.meta||{},
-      bodyRows:state.bodyRows||[],
-      calendar
-    },{merge:true});
-  } catch(e){ console.error("[saveMonth] error",e); }
+/* ===== Firestore persistence (ADDED) ===== */
+function saveMonth(key){
+  if(!db) return;
+  const state=monthStore[key]; if(!state) return;
+  const cleanData = flatten2D(state.data);
+  const calendar=(state.calendar||[]).map(w=>w.map(d=>({date:d.date.toISOString(),inMonth:d.inMonth})));
+  setDoc(doc(db,"months",key),{
+    data:cleanData,
+    meta:state.meta||{},
+    bodyRows:state.bodyRows||[],
+    calendar
+  },{merge:true}).then(()=>console.log("[saveMonth]",key,"ok"))
+    .catch(e=>console.error("[saveMonth] error",e));
 }
 function attachMonthListener(key){
+  if(!db) return;
   if(unwatchMonth){unwatchMonth(); unwatchMonth=null;}
   unwatchMonth=onSnapshot(doc(db,"months",key),(snap)=>{
     if(!snap.exists()) return;
     const s=snap.data();
     const rows = unflatten2D(s.data||[]);
     const calendar=(s.calendar||[]).map(w=>w.map(d=>({date:new Date(d.date),inMonth:d.inMonth})));
+    // keep other fields intact
     monthStore[key]={...monthStore[key],data:rows,meta:s.meta||{},bodyRows:s.bodyRows||[],calendar};
     bodyRows=monthStore[key].bodyRows.slice();
     if(hot){hot.loadData(monthStore[key].data);hot.render();}
@@ -257,7 +275,9 @@ function applyColor(color){
     for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
       if(color) monthStore[key].meta[`${r}:${c}`]=color; else delete monthStore[key].meta[`${r}:${c}`];
     }}
-  hot.render(); saveMonth(key);
+  hot.render();
+  // persist color changes (ADDED)
+  saveMonth(key);
 }
 
 /* ---------------- Add/Delete Rows ---------------- */
@@ -276,14 +296,18 @@ function addRows(){const n=parseInt(document.getElementById('rowsToModify').valu
   bodyRows[w]+=n; monthStore[key].bodyRows=bodyRows.slice();
   monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);
-  renderMonth(); saveMonth(key);}
+  renderMonth();
+  // persist row structure (ADDED)
+  saveMonth(key);}
 function delRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
   const sel=lastSel||hot.getSelectedLast(); if(!sel)return; const w=weekIndexForRow(sel[0]); if(w<0)return;
   if(bodyRows[w]<=n)return; const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
   bodyRows[w]-=n; monthStore[key].bodyRows=bodyRows.slice();
   monthStore[key].data.splice(start,n);
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
-  renderMonth(); saveMonth(key);}
+  renderMonth();
+  // persist row structure (ADDED)
+  saveMonth(key);}
 
 /* ---------------- Directory ---------------- */
 directoryHot=new Handsontable(document.getElementById('directory'),{
@@ -333,8 +357,12 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
+      // Skip Travel/Stay/Drive rows
       const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
-      if (forbidden.includes(study.toUpperCase())) { r++; continue; }
+      if (forbidden.includes(study.toUpperCase())) {
+        r++;
+        continue;
+      }
 
       if (study && visit) {
         const wk = weekIndexForRowLocal(r);
@@ -373,7 +401,7 @@ function parseSchedule(y, m) {
           summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
         });
 
-        // Unique visits counting (study/site by day)
+        // Unique visits counting
         if (dateObj) {
           const dKey = formatDate(dateObj);
 
