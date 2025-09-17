@@ -5,29 +5,6 @@
 <title>Scheduler App</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
-
-<!-- Firebase (module): expose Firestore to the non-module app code via window.__fire -->
-<script type="module">
-  import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
-  import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
-
-  const firebaseConfig = {
-    apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
-    authDomain: "crcscheduler.firebaseapp.com",
-    projectId: "crcscheduler",
-    storageBucket: "crcscheduler.firebasestorage.app",
-    messagingSenderId: "865356677041",
-    appId: "1:865356677041:web:002d88c85f00140088c790",
-    measurementId: "G-00XV2C5HDL"
-  };
-
-  const app = initializeApp(firebaseConfig);
-  const db = getFirestore(app);
-
-  // Expose Firestore bits to the rest of the app (which remains non-module)
-  window.__fire = { db, doc, setDoc, getDoc, onSnapshot };
-</script>
-
 <style>
   body { font-family: Arial, sans-serif; margin: 18px; }
   nav { margin-bottom: 12px; }
@@ -92,26 +69,50 @@
     <div id="summarySite"></div>
   </div>
 
+<script type="module">
+/* ---------------- Firebase Setup ---------------- */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
+  authDomain: "crcscheduler.firebaseapp.com",
+  projectId: "crcscheduler",
+  storageBucket: "crcscheduler.firebasestorage.app",
+  messagingSenderId: "865356677041",
+  appId: "1:865356677041:web:002d88c85f00140088c790",
+  measurementId: "G-00XV2C5HDL"
+};
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+// Expose helpers
+window.__fire = { db, doc, setDoc, getDoc, onSnapshot };
+</script>
+
 <script>
 /* ---------------- Shared State ---------------- */
 let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
-const _subscribedMonths = new Set(); // prevent duplicate realtime listeners
+const _subscribedMonths = new Set();
 
-/* ---------------- Firebase helpers ---------------- */
+/* ---------------- Firebase Helpers ---------------- */
 async function saveMonthToFirebase(key){
   if(!window.__fire) return;
   const state = monthStore[key];
   if(!state) return;
   const { db, doc, setDoc } = window.__fire;
-  await setDoc(doc(db, "months", key), {
-    data: state.data,
-    bodyRows: state.bodyRows,
-    meta: state.meta
-  });
+  try {
+    await setDoc(doc(db, "months", key), {
+      data: JSON.stringify(state.data),   // 🔹 store as string
+      bodyRows: state.bodyRows,
+      meta: state.meta
+    });
+  } catch(e){ console.error("Save failed", e); }
 }
+
 async function loadMonthFromFirebase(y, m){
   if(!window.__fire) return false;
   const key = monthKey(y,m);
@@ -119,14 +120,15 @@ async function loadMonthFromFirebase(y, m){
   const snap = await getDoc(doc(db, "months", key));
   if(snap.exists()){
     const d = snap.data();
-    // Merge into the locally-built month
-    monthStore[key].data = d.data;
+    if(!monthStore[key]) return false;
+    monthStore[key].data = JSON.parse(d.data);   // 🔹 restore array
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = d.meta || {};
     return true;
   }
   return false;
 }
+
 function subscribeMonthRealtime(y, m){
   if(!window.__fire) return;
   const key = monthKey(y,m);
@@ -137,10 +139,10 @@ function subscribeMonthRealtime(y, m){
     if(!snap.exists()) return;
     const d = snap.data();
     if(!monthStore[key]) return;
-    monthStore[key].data = d.data;
+    monthStore[key].data = JSON.parse(d.data);
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = d.meta || {};
-    bodyRows = monthStore[key].bodyRows.slice();    // keep renderer’s weekStarts aligned
+    bodyRows = monthStore[key].bodyRows.slice();
     if(hot){
       hot.loadData(monthStore[key].data);
       hot.render();
@@ -202,7 +204,6 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
   const color=monthStore[key]?.meta?.[`${row}:${col}`];
   if(color) td.style.background=color;
 
-  // Grey out full day columns outside the month
   const state = monthStore[key];
   if (state && state.calendar) {
     const weekIdx = weekIndexForRow(row);
@@ -228,7 +229,6 @@ async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
 
-  // Build a fresh blank month first (headers + calendar)
   if(!monthStore[key]){
     const br=Array(weeks).fill(8);
     const data=buildDataFor(y,m,weeks,br);
@@ -243,15 +243,13 @@ async function renderMonth(){
       }
       acc+=1+br[w];
     }
-    monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+    monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,
+                     shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
 
-    // Try to merge Firestore content (if exists). If not, we keep the blank one.
     await loadMonthFromFirebase(y,m);
-    // Start realtime updates for this month
     subscribeMonthRealtime(y,m);
   }
 
-  // Show current month (either loaded or blank)
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
 
@@ -290,8 +288,7 @@ function applyColor(color){
     for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
       if(color) monthStore[key].meta[`${r}:${c}`]=color; else delete monthStore[key].meta[`${r}:${c}`];
     }}
-  hot.render();
-  saveMonthToFirebase(key);
+  hot.render(); saveMonthToFirebase(key);
 }
 
 /* ---------------- Add/Delete Rows ---------------- */
@@ -327,7 +324,7 @@ directoryHot=new Handsontable(document.getElementById('directory'),{
 });
 function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
 
-/* ---------------- Process Schedule (Parsing) ---------------- */
+/* ---------------- Process Schedule ---------------- */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -367,12 +364,8 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
-      // 🔹 Skip Travel/Stay/Drive rows
       const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
-      if (forbidden.includes(study.toUpperCase())) {
-        r++;
-        continue;
-      }
+      if (forbidden.includes(study.toUpperCase())) { r++; continue; }
 
       if (study && visit) {
         const wk = weekIndexForRowLocal(r);
@@ -404,17 +397,14 @@ function parseSchedule(y, m) {
           rr++;
         }
 
-        // ShiftLog entries
         roles.forEach(({ role, emp }) => {
           const email = emailMap[emp.toLowerCase()] || "";
           shiftLog.push([dateStr, study, visit, role, emp, email, site, pi]);
           summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
         });
 
-        // Unique visits counting
         if (dateObj) {
           const dKey = formatDate(dateObj);
-
           if (!studyVisits[study]) studyVisits[study] = {};
           if (!studyVisits[study][dKey]) studyVisits[study][dKey] = new Set();
           if (site) studyVisits[study][dKey].add(site);
@@ -434,13 +424,9 @@ function parseSchedule(y, m) {
 
   state.shiftLog = shiftLog;
   state.summary = Object.entries(summaryShifts);
-
   state.summaryStudy = Object.entries(studyVisits).map(([study, dates]) => {
-    let total = 0;
-    Object.values(dates).forEach(set => total += set.size);
-    return [study, total];
+    let total = 0; Object.values(dates).forEach(set => total += set.size); return [study, total];
   });
-
   state.summarySite = Object.entries(siteVisits).map(([site, dates]) => [site, dates.size]);
 }
 
@@ -453,6 +439,7 @@ function refreshMonthSelect(){
     o.value=k; o.textContent=k; sel.appendChild(o);
   });
 }
+
 function renderReports(){
   const sel=document.getElementById('monthSelect').value;
   if(!sel) return;
@@ -477,6 +464,7 @@ function renderReports(){
     s.summarySite
   );
 }
+
 function renderTable(id,hdrs,rows){
   let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
   rows.forEach(r=>{
