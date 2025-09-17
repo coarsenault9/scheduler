@@ -366,9 +366,9 @@ async function saveMonthToFirebase(y,m){
   if(!state) return;
   try{
     await setDoc(doc(db,"months",key),{
-      data: state.data,        // <-- arrays directly
-      bodyRows: state.bodyRows,
-      meta: state.meta
+      data: JSON.stringify(state.data),
+      bodyRows: JSON.stringify(state.bodyRows),
+      meta: JSON.stringify(state.meta)
     });
     console.log("[SAVE] Wrote", key);
   }catch(e){console.error("Save error", e);}
@@ -382,9 +382,9 @@ async function loadMonthFromFirebase(y,m){
       const raw = snap.data();
       console.log("[LOAD raw]", raw);
       monthStore[key] = {
-        data: raw.data || [],
-        bodyRows: raw.bodyRows || [],
-        meta: raw.meta || {},
+        data: JSON.parse(raw.data || "[]"),
+        bodyRows: JSON.parse(raw.bodyRows || "[]"),
+        meta: JSON.parse(raw.meta || "{}"),
         calendar: buildWeekMatrix(y,m,numWeeks(y,m)),
         dayMeta:{},
         shiftLog:[],summary:[],summaryStudy:[],summarySite:[],
