@@ -5,6 +5,29 @@
 <title>Scheduler App</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
+
+<!-- Firebase module: exposes Firestore via window.__fire so the rest of your code stays non-module -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+  import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
+    authDomain: "crcscheduler.firebaseapp.com",
+    projectId: "crcscheduler",
+    storageBucket: "crcscheduler.firebasestorage.app",
+    messagingSenderId: "865356677041",
+    appId: "1:865356677041:web:002d88c85f00140088c790",
+    measurementId: "G-00XV2C5HDL"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+
+  // expose the bits we need to the non-module script
+  window.__fire = { db, doc, setDoc, getDoc, onSnapshot };
+</script>
+
 <style>
   body { font-family: Arial, sans-serif; margin: 18px; }
   nav { margin-bottom: 12px; }
@@ -55,7 +78,7 @@
   <!-- Reports Page -->
   <div id="reportsPage" class="page">
     <h2>Reports</h2>
-    <label>Choose Month:
+    <label>Choose Month: 
       <select id="monthSelect"></select>
     </label>
     <button onclick="renderReports()">Generate Report</button>
@@ -69,114 +92,165 @@
     <div id="summarySite"></div>
   </div>
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
-import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
-
-const firebaseConfig = {
-  apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
-  authDomain: "crcscheduler.firebaseapp.com",
-  projectId: "crcscheduler",
-  storageBucket: "crcscheduler.firebasestorage.app",
-  messagingSenderId: "865356677041",
-  appId: "1:865356677041:web:002d88c85f00140088c790",
-  measurementId: "G-00XV2C5HDL"
-};
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-
-/* ---------- Shared State ---------- */
+<script>
+/* ---------------- Shared State ---------------- */
 let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
+const _subscribedMonths = new Set(); // avoid duplicate realtime listeners
 
-/* ---------- Firebase helpers ---------- */
-async function saveMonth(key){
-  const state=monthStore[key]; if(!state) return;
-  await setDoc(doc(db,"months",key),{data:state.data,bodyRows:state.bodyRows,meta:state.meta});
+/* ---------------- Firebase helpers (called only if window.__fire exists) ---------------- */
+async function saveMonthToFirebase(key){
+  if(!window.__fire) return;
+  const state = monthStore[key];
+  if(!state) return;
+  const { db, doc, setDoc } = window.__fire;
+  await setDoc(doc(db, "months", key), {
+    data: state.data,
+    bodyRows: state.bodyRows,
+    meta: state.meta
+  });
 }
-async function loadMonth(y,m){
-  const key=monthKey(y,m);
-  const snap=await getDoc(doc(db,"months",key));
+
+async function loadMonthFromFirebase(y, m){
+  if(!window.__fire) return false;
+  const key = monthKey(y,m);
+  const { db, doc, getDoc } = window.__fire;
+  const snap = await getDoc(doc(db, "months", key));
   if(snap.exists()){
-    const d=snap.data();
-    monthStore[key].data=d.data;
-    monthStore[key].bodyRows=d.bodyRows;
-    monthStore[key].meta=d.meta;
+    const d = snap.data();
+    // Merge into the locally-built month (preserves calendar/day headers)
+    monthStore[key].data = d.data;
+    monthStore[key].bodyRows = d.bodyRows;
+    monthStore[key].meta = d.meta || {};
+    return true;
   }
+  return false;
 }
-function subscribeToMonth(y,m){
-  const key=monthKey(y,m);
-  onSnapshot(doc(db,"months",key),(snap)=>{
-    if(snap.exists() && monthStore[key]){
-      const d=snap.data();
-      monthStore[key].data=d.data;
-      monthStore[key].bodyRows=d.bodyRows;
-      monthStore[key].meta=d.meta;
-      if(hot){ hot.loadData(monthStore[key].data); hot.render(); }
+
+function subscribeMonthRealtime(y, m){
+  if(!window.__fire) return;
+  const key = monthKey(y,m);
+  if(_subscribedMonths.has(key)) return;
+  const { db, doc, onSnapshot } = window.__fire;
+  _subscribedMonths.add(key);
+  onSnapshot(doc(db, "months", key), (snap)=>{
+    if(!snap.exists()) return;
+    const d = snap.data();
+    if(!monthStore[key]) return;
+    monthStore[key].data = d.data;
+    monthStore[key].bodyRows = d.bodyRows;
+    monthStore[key].meta = d.meta || {};
+    if(hot){
+      hot.loadData(monthStore[key].data);
+      hot.render();
     }
   });
 }
 
-/* ---------- Page Switching ---------- */
+/* ---------------- Page Switching ---------------- */
 function showPage(id){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   if(id==='reportsPage') refreshMonthSelect();
 }
-window.showPage=showPage;
-function monthKey(y,m){return `${y}-${String(m+1).padStart(2,'0')}`;}
+function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
 
-/* ---------- Calendar helpers ---------- */
-function startOfCalendar(year,monthIdx){const first=new Date(year,monthIdx,1);const dow=(first.getDay()+6)%7;const d=new Date(first);d.setDate(first.getDate()-dow);return d;}
-function numWeeks(year,monthIdx){const start=startOfCalendar(year,monthIdx);const end=new Date(year,monthIdx+1,0);const diff=Math.ceil((end-start)/86400000)+1;return Math.ceil(diff/7);}
-function buildWeekMatrix(year,monthIdx,weeks){const start=startOfCalendar(year,monthIdx);const matrix=[];for(let w=0;w<weeks;w++){const row=[];for(let d=0;d<DAYS_PER_WEEK;d++){const cell=new Date(start);cell.setDate(start.getDate()+w*7+d);row.push({date:new Date(cell),inMonth:cell.getMonth()===monthIdx});}matrix.push(row);}return matrix;}
+/* ---------------- Calendar Helpers ---------------- */
+function startOfCalendar(year, monthIdx){
+  const first=new Date(year,monthIdx,1);
+  const dow=(first.getDay()+6)%7; // Mon=0
+  const d=new Date(first);
+  d.setDate(first.getDate()-dow);
+  return d;
+}
+function numWeeks(year, monthIdx){
+  const start=startOfCalendar(year,monthIdx);
+  const end=new Date(year,monthIdx+1,0);
+  const diff=Math.ceil((end-start)/86400000)+1;
+  return Math.ceil(diff/7);
+}
+function buildWeekMatrix(year, monthIdx, weeks){
+  const start=startOfCalendar(year,monthIdx);
+  const matrix=[];
+  for(let w=0;w<weeks;w++){
+    const row=[];
+    for(let d=0;d<DAYS_PER_WEEK;d++){
+      const cell=new Date(start);
+      cell.setDate(start.getDate()+w*7+d);
+      row.push({
+        date: new Date(cell),
+        inMonth: cell.getMonth()===monthIdx
+      });
+    }
+    matrix.push(row);
+  }
+  return matrix;
+}
 
-/* ---------- Renderer ---------- */
-function colorRenderer(instance,td,row,col,prop,value,cellProps){
-  Handsontable.renderers.TextRenderer.apply(this,arguments);
+/* ---------------- Data ---------------- */
+function buildDataFor(y,m,weeks,br){
+  const rows=br.reduce((s,b)=>s+1+b,0);
+  return Array.from({length:rows},()=>Array(TOTAL_COLS).fill(""));
+}
+
+/* ---------------- Renderer ---------------- */
+function colorRenderer(instance, td, row, col, prop, value, cellProps){
+  Handsontable.renderers.TextRenderer.apply(this, arguments);
+
   const key=monthKey(current.getFullYear(),current.getMonth());
   const color=monthStore[key]?.meta?.[`${row}:${col}`];
   if(color) td.style.background=color;
-  const state=monthStore[key];
-  if(state && state.calendar){const weekIdx=weekIndexForRow(row);const dayIdx=Math.floor(col/2);if(weekIdx>=0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth){td.style.background=\"#f0f0f0\";td.style.color=\"#999\";}}
-  if(weekStarts().includes(row)){td.style.background=\"#e0e0e0\";td.style.fontWeight=\"600\";}
+
+  // Grey out full day columns outside the month
+  const state = monthStore[key];
+  if (state && state.calendar) {
+    const weekIdx = weekIndexForRow(row);
+    const dayIdx = Math.floor(col / 2);
+    if (weekIdx >= 0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth) {
+      td.style.background = "#f0f0f0";
+      td.style.color = "#999";
+    }
+  }
+
+  if(weekStarts().includes(row)){
+    td.style.background="#e0e0e0";
+    td.style.fontWeight="600";
+  }
   if(col%2===1) td.classList.add('day-sep');
 }
 
-/* ---------- Scheduler ---------- */
-function weekStarts(){let s=[],a=0;for(let i=0;i<bodyRows.length;i++){s.push(a);a+=1+bodyRows[i];}return s;}
-function weekIndexForRow(rowIdx){const s=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=s[i]&&rowIdx<=s[i]+bodyRows[i])return i;}return -1;}
+/* ---------------- Scheduler ---------------- */
+function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
+function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
 async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
-
-  // Always rebuild matrix with headers
-  const br=Array(weeks).fill(8);
-  const data=buildDataFor(y,m,weeks,br);
-  const matrix=buildWeekMatrix(y,m,weeks);
-  const dayMeta={};
-  let acc=0;
-  for(let w=0;w<weeks;w++){
-    for(let d=0;d<DAYS_PER_WEEK;d++){
-      const c=d*COLS_PER_DAY;
-      data[acc][c]=matrix[w][d].toLocaleString ? matrix[w][d].date.toLocaleString('default',{weekday:'short'})+\" \"+matrix[w][d].date.getDate() : \"\";
-      dayMeta[`${acc}:${c}`]=matrix[w][d];
+  if(!monthStore[key]){
+    const br=Array(weeks).fill(8);
+    const data=buildDataFor(y,m,weeks,br);
+    const matrix=buildWeekMatrix(y,m,weeks);
+    const dayMeta={};
+    let acc=0;
+    for(let w=0;w<weeks;w++){
+      for(let d=0;d<DAYS_PER_WEEK;d++){
+        const c=d*COLS_PER_DAY;
+        data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();
+        dayMeta[`${acc}:${c}`]=matrix[w][d];
+      }
+      acc+=1+br[w];
     }
-    acc+=1+br[w];
+    monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
+
+    // Try merging an existing month from Firestore; if none, we keep this blank one.
+    await loadMonthFromFirebase(y,m);
+    // Begin realtime sync
+    subscribeMonthRealtime(y,m);
   }
-  monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-
-  // Merge from Firestore if exists
-  await loadMonth(y,m);
-
-  subscribeToMonth(y,m);
-
   bodyRows=monthStore[key].bodyRows.slice();
-  document.getElementById(\"monthLabel\").textContent=current.toLocaleString('default',{month:'long'})+\" \"+y;
-
+  document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
   if(hot) hot.destroy();
   hot=new Handsontable(document.getElementById('grid'),{
     data:monthStore[key].data,
@@ -184,35 +258,72 @@ async function renderMonth(){
     columns:Array.from({length:TOTAL_COLS},()=>({type:'text'})),
     licenseKey:'non-commercial-and-evaluation',
     contextMenu:true,
-    cells:(r,c)=>{let props={renderer:colorRenderer};if(weekStarts().includes(r)) props.readOnly=true;return props;},
+    cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterChange:()=>saveMonth(key)
+    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
+      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
+        const key=monthKey(current.getFullYear(),current.getMonth());
+        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
+        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
+      }});},
+    afterPaste:(data,coords)=>{if(!clipboardMeta)return;const {startRow,startCol}=coords[0];const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{if(item.color){const rr=startRow+item.r,cc=startCol+item.c;monthStore[key].meta[`${rr}:${cc}`]=item.color;}});
+      hot.render(); saveMonthToFirebase(key);},
+    afterChange:()=>{ saveMonthToFirebase(key); }
   });
 }
-window.renderMonth=renderMonth;
-function prevMonth(){current.setMonth(current.getMonth()-1);renderMonth();}
-function nextMonth(){current.setMonth(current.getMonth()+1);renderMonth();}
-window.prevMonth=prevMonth; window.nextMonth=nextMonth;
+function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
+function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
 
-/* ---------- Colors ---------- */
-const colors=[\"#f28b82\",\"#fbbc04\",\"#fff475\",\"#ccff90\",\"#a7ffeb\",\"#cbf0f8\",\"#aecbfa\",\"#d7aefb\",\"#fdcfe8\",\"#e6c9a8\",\"#e8eaed\",\"#d50000\",\"#c51162\",\"#aa00ff\",\"#304ffe\",\"#2962ff\",\"#0091ea\",\"#00b8d4\",\"#00c853\",\"#64dd17\"];
+/* ---------------- Colors ---------------- */
+const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8","#e8eaed","#d50000","#c51162","#aa00ff","#304ffe","#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
 (function(){const p=document.getElementById('palette');colors.forEach(c=>{let sw=document.createElement('div');sw.className='swatch';sw.style.background=c;sw.onclick=()=>applyColor(c);p.appendChild(sw);});let clr=document.createElement('div');clr.className='swatch clear';clr.textContent='×';clr.onclick=()=>applyColor(null);p.appendChild(clr);})();
-function applyColor(color){const sel=lastSel||hot.getSelectedLast();if(!sel)return;const [r1,c1,r2,c2]=sel;const key=monthKey(current.getFullYear(),current.getMonth());if(!monthStore[key].meta) monthStore[key].meta={};for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){if(weekStarts().includes(r))continue;for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){if(color) monthStore[key].meta[`${r}:${c}`]=color;else delete monthStore[key].meta[`${r}:${c}`];}}hot.render();saveMonth(key);}
-window.applyColor=applyColor;
+function applyColor(color){
+  const sel=lastSel||hot.getSelectedLast(); if(!sel)return;
+  const [r1,c1,r2,c2]=sel; const key=monthKey(current.getFullYear(),current.getMonth());
+  if(!monthStore[key].meta) monthStore[key].meta={};
+  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){ if(weekStarts().includes(r))continue;
+    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
+      if(color) monthStore[key].meta[`${r}:${c}`]=color; else delete monthStore[key].meta[`${r}:${c}`];
+    }}
+  hot.render();
+  saveMonthToFirebase(key);
+}
 
-/* ---------- Add/Delete Rows ---------- */
-function shiftMeta(meta,startRow,delta){const newMeta={};Object.entries(meta).forEach(([k,v])=>{let[r,c]=k.split(\":\").map(Number);if(r>=startRow) r+=delta;newMeta[`${r}:${c}`]=v;});return newMeta;}
-function addRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);const sel=lastSel||hot.getSelectedLast();if(!sel)return;const w=weekIndexForRow(sel[0]);if(w<0)return;const key=monthKey(current.getFullYear(),current.getMonth());const start=weekStarts()[w]+1;bodyRows[w]+=n;monthStore[key].bodyRows=bodyRows.slice();monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill(\"\")));monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);renderMonth();saveMonth(key);}
-function delRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);const sel=lastSel||hot.getSelectedLast();if(!sel)return;const w=weekIndexForRow(sel[0]);if(w<0)return;const key=monthKey(current.getFullYear(),current.getMonth());if(bodyRows[w]<=n)return;const start=weekStarts()[w]+1;bodyRows[w]-=n;monthStore[key].bodyRows=bodyRows.slice();monthStore[key].data.splice(start,n);monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);renderMonth();saveMonth(key);}
-window.addRows=addRows; window.delRows=delRows;
+/* ---------------- Add/Delete Rows ---------------- */
+function shiftMeta(meta, startRow, delta){
+  const newMeta={};
+  Object.entries(meta).forEach(([k,v])=>{
+    let [r,c]=k.split(":").map(Number);
+    if(r>=startRow) r+=delta;
+    newMeta[`${r}:${c}`]=v;
+  });
+  return newMeta;
+}
+function addRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
+  const sel=lastSel||hot.getSelectedLast(); if(!sel)return; const w=weekIndexForRow(sel[0]); if(w<0)return;
+  const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
+  bodyRows[w]+=n; monthStore[key].bodyRows=bodyRows.slice();
+  monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
+  monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);
+  renderMonth(); saveMonthToFirebase(key);}
+function delRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
+  const sel=lastSel||hot.getSelectedLast(); if(!sel)return; const w=weekIndexForRow(sel[0]); if(w<0)return;
+  if(bodyRows[w]<=n)return; const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
+  bodyRows[w]-=n; monthStore[key].bodyRows=bodyRows.slice();
+  monthStore[key].data.splice(start,n);
+  monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
+  renderMonth(); saveMonthToFirebase(key);}
 
-/* ---------- Directory ---------- */
-directoryHot=new Handsontable(document.getElementById('directory'),{data:[[\"\",\"\",\"\"]],colHeaders:[\"Name\",\"Email\",\"Phone\"],rowHeaders:true,minSpareRows:1,contextMenu:true,licenseKey:'non-commercial-and-evaluation'});
+/* ---------------- Directory ---------------- */
+directoryHot=new Handsontable(document.getElementById('directory'),{
+  data:[["","",""]],
+  colHeaders:["Name","Email","Phone"], rowHeaders:true, minSpareRows:1,
+  contextMenu:true, licenseKey:'non-commercial-and-evaluation'
+});
+function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
 
-/* ---------- Reports ---------- */
-// reuse your parseSchedule + renderReports from before
-
-renderMonth();
+/* ---------------- Process Schedule ---------------- */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -252,9 +363,12 @@ function parseSchedule(y, m) {
       const study = (data[r][c] || "").trim();
       const visit = (data[r][c + 1] || "").trim();
 
-      // Skip Travel/Stay/Drive rows
+      // 🔹 Skip Travel/Stay/Drive rows
       const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
-      if (forbidden.includes(study.toUpperCase())) { r++; continue; }
+      if (forbidden.includes(study.toUpperCase())) {
+        r++;
+        continue;
+      }
 
       if (study && visit) {
         const wk = weekIndexForRowLocal(r);
@@ -293,7 +407,7 @@ function parseSchedule(y, m) {
           summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
         });
 
-        // Unique visit counts
+        // Unique visits counting
         if (dateObj) {
           const dKey = formatDate(dateObj);
 
@@ -328,28 +442,21 @@ function parseSchedule(y, m) {
 
 /* ---------------- Reports ---------------- */
 function refreshMonthSelect(){
-  const sel = document.getElementById('monthSelect');
-  sel.innerHTML = "";
-  // Offer any months already touched this session
+  const sel=document.getElementById('monthSelect');
+  sel.innerHTML="";
   Object.keys(monthStore).sort().forEach(k=>{
     const o=document.createElement('option');
     o.value=k; o.textContent=k; sel.appendChild(o);
   });
-  // Default to current month if available
-  const curKey = monthKey(current.getFullYear(), current.getMonth());
-  if ([...sel.options].length && ![...sel.options].some(o=>o.value===curKey)) {
-    const o=document.createElement('option');
-    o.value=curKey; o.textContent=curKey; sel.appendChild(o);
-  }
-  if (sel.options.length) sel.value = curKey;
 }
 
 function renderReports(){
-  const sel = document.getElementById('monthSelect').value;
+  const sel=document.getElementById('monthSelect').value;
   if(!sel) return;
-  const [y,m] = sel.split('-').map(Number);
+  const [y,m]=sel.split('-').map(Number);
   parseSchedule(y, m-1);
-  const s = monthStore[sel];
+  const s=monthStore[sel];
+
   renderTable("shiftLog",
     ["Date","Study","Visit","Role","Employee","Email","Site","PI"],
     s.shiftLog
@@ -368,7 +475,7 @@ function renderReports(){
   );
 }
 
-function renderTable(id, hdrs, rows){
+function renderTable(id,hdrs,rows){
   let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
   rows.forEach(r=>{
     html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>";
