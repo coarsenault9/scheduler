@@ -46,7 +46,7 @@ window.showPage = showPage;
 /* ===== Calendar Helpers ===== */
 function startOfCalendar(year, monthIdx){
   const first = new Date(year,monthIdx,1);
-  const dow = (first.getDay()+6)%7; // Mon=0
+  const dow = (first.getDay()+6)%7;
   const d = new Date(first);
   d.setDate(first.getDate()-dow);
   return d;
@@ -138,26 +138,9 @@ async function renderMonth(){
     contextMenu:true,
     cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
-      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
-        const key=monthKey(current.getFullYear(),current.getMonth());
-        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
-        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
-      }});},
-    afterPaste:(data,coords)=>{ if(!clipboardMeta) return;
-      const {startRow,startCol}=coords[0]; const key=monthKey(current.getFullYear(),current.getMonth());
-      clipboardMeta.forEach(item=>{
-        if(item.color){
-          const rr=startRow+item.r, cc=startCol+item.c;
-          monthStore[key].meta[`${rr}:${cc}`]=item.color;
-        }
-      });
-      hot.render(); saveMonthToFirebase(y,m);
-    },
     afterChange:()=>{ saveMonthToFirebase(y,m); }
   });
 
-  // refresh the availability sidebar for this (y,m)
   refreshAvailabilitySidebar(y,m);
 }
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
@@ -238,7 +221,7 @@ window.delRows = delRows;
 /* ===== Directory (persisted) ===== */
 const directoryContainer = document.getElementById('directory');
 directoryHot = new Handsontable(directoryContainer,{
-  data:[["","","","Set ▶"]], // Name, Email, Phone, Availability button label
+  data:[["","","","Set ▶"]],
   colHeaders:["Name","Email","Phone","Availability"],
   columns:[
     {type:'text'}, {type:'text'}, {type:'text'},
@@ -254,8 +237,7 @@ directoryHot = new Handsontable(directoryContainer,{
   afterRemoveRow: ()=>saveDirectoryToFirebase(),
 });
 
-function availabilityButtonRenderer(instance, td, row, col, prop, value){
-  // Create a clickable button within the cell
+function availabilityButtonRenderer(instance, td, row, col){
   td.innerHTML = "";
   const btn = document.createElement('button');
   btn.textContent = "Set ▶";
@@ -272,12 +254,11 @@ function availabilityButtonRenderer(instance, td, row, col, prop, value){
 
 async function saveDirectoryToFirebase(){
   try{
-    const data = directoryHot.getData(); // 2D array (has an extra spare row)
-    const payload = { data: JSON.stringify(data) }; // stringify to avoid nested arrays
+    const data = directoryHot.getData();
+    const payload = { data: JSON.stringify(data) };
     await setDoc(doc(db,"directory","main"), payload);
   }catch(e){ console.error("Directory save error", e); }
 }
-
 async function loadDirectoryFromFirebase(){
   try{
     const snap = await getDoc(doc(db,"directory","main"));
@@ -305,13 +286,10 @@ let selectedDays = new Set();
 function openAvailabilityModal(employeeName){
   currentAvailEmployee = employeeName;
   modalTitle.textContent = `Set Unavailable Days — ${employeeName}`;
-  // default to current month in input[type=month]
   const y = current.getFullYear();
   const m = current.getMonth()+1;
   monthInput.value = `${y}-${pad2(m)}`;
-  // build grid for that month
   buildDaysGridFromInput();
-  // preload existing availability for that month
   preloadAvailability(employeeName, y, m-1).then(()=>{});
   modal.classList.add('open');
 }
@@ -353,7 +331,6 @@ async function preloadAvailability(employeeName, y, m){
       const data = snap.data();
       const days = Array.isArray(data.days) ? data.days : [];
       selectedDays = new Set(days);
-      // mark selected in grid
       Array.from(daysGrid.children).forEach(btn=>{
         const d = Number(btn.textContent);
         if(selectedDays.has(d)) btn.classList.add('selected');
@@ -374,32 +351,24 @@ saveAvailBtn.addEventListener('click', async ()=>{
       updatedAt: serverTimestamp()
     });
     closeAvailabilityModal();
-    // if sidebar is showing this month, refresh it
     const cy = current.getFullYear(), cm = current.getMonth();
     if(yy===cy && mm-1===cm) refreshAvailabilitySidebar(cy,cm);
   }catch(e){ console.error("Availability save error", e); }
 });
 
-/* ===== Availability sidebar (per month) ===== */
+/* ===== Availability sidebar ===== */
 async function refreshAvailabilitySidebar(y,m){
   const sidebar = document.getElementById('availabilitySidebar');
   sidebar.innerHTML = `<div class="aside-title">Availability (${y}-${pad2(m+1)})</div><div class="aside-body">Loading…</div>`;
   const body = sidebar.querySelector('.aside-body');
-
-  // build list of employees from the directory (non-empty names)
   const rows = directoryHot.getData();
   const employees = [];
   rows.forEach(row=>{
     const name = (row?.[0]||"").trim();
     if(name) employees.push(name);
   });
+  if(!employees.length){ body.textContent = "No employees in the directory."; return; }
 
-  if(!employees.length){
-    body.textContent = "No employees in the directory.";
-    return;
-  }
-
-  // fetch availability for each employee for this y-m
   const ym = `${y}-${pad2(m+1)}`;
   const fragments = [];
   for(const name of employees){
@@ -430,7 +399,6 @@ function parseSchedule(y, m){
   const starts=startsFrom(br);
   function weekIndexForRowLocal(rowIdx){for(let i=0;i<br.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+br[i])return i;}return -1;}
   function formatDate(d){return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});}
-
   const shiftLog=[], summaryShifts={}, studyVisits={}, siteVisits={}, emailMap=getDirectoryMap();
 
   for(let c=0;c<TOTAL_COLS;c+=2){
@@ -440,7 +408,6 @@ function parseSchedule(y, m){
       const visit=(data[r][c+1]||"").trim();
       const forbidden=["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
       if(forbidden.includes(study.toUpperCase())){ r++; continue; }
-
       if(study && visit){
         const wk=weekIndexForRowLocal(r);
         const dayIdx=Math.floor(c/2);
@@ -466,7 +433,6 @@ function parseSchedule(y, m){
           shiftLog.push([dateStr,study,visit,role,emp,email,site,pi]);
           summaryShifts[emp]=(summaryShifts[emp]||0)+1;
         });
-
         if(dateObj){
           const dKey=formatDate(dateObj);
           if(!studyVisits[study]) studyVisits[study]={};
@@ -481,17 +447,34 @@ function parseSchedule(y, m){
   }
 
   state.shiftLog = shiftLog;
-  state.summary = Object.entries(summaryShifts);
-  state.summaryStudy = Object.entries(studyVisits).map(([study, dates])=>{
-    let total=0; Object.values(dates).forEach(set=> total += set.size); return [study,total];
+  const ym = `${y}-${pad2(m+1)}`;
+  const employees = Object.keys(summaryShifts);
+  const employeeSummary = [];
+  const promises = employees.map(async emp=>{
+    const empId = empIdFromName(emp);
+    let unavailable = [];
+    try {
+      const snap = await getDoc(doc(db,"availability", empId, "months", ym));
+      if(snap.exists()){
+        const data = snap.data();
+        unavailable = Array.isArray(data.days)? data.days : [];
+      }
+    } catch(e){ console.error("Utilization fetch error",e); }
+    const scheduledDays = summaryShifts[emp];
+    const totalDays = daysInMonth(y,m);
+    const availableDays = Math.max(totalDays - unavailable.length, 0);
+    const util = availableDays>0 ? ((scheduledDays/availableDays)*100).toFixed(1)+"%" : "0%";
+    employeeSummary.push([emp, scheduledDays, util]);
   });
-  state.summarySite = Object.entries(siteVisits).map(([site, dates])=>[site, dates.size]);
+  state.summaryPromise = Promise.all(promises).then(()=>{ state.summary = employeeSummary; });
 }
+
 function refreshMonthSelect(){
   const sel=document.getElementById('monthSelect');
   sel.innerHTML="";
   Object.keys(monthStore).sort().forEach(k=>{
-    const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o);
+    const o=document.createElement('option');
+    o.value=k; o.textContent=k; sel.appendChild(o);
   });
 }
 function renderReports(){
@@ -499,23 +482,23 @@ function renderReports(){
   const [y,m]=sel.split('-').map(Number);
   parseSchedule(y, m-1);
   const s=monthStore[sel];
-  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],s.shiftLog);
-  renderTable("summary",["Employee","Count"],s.summary);
-  renderTable("summaryStudy",["Study","Unique Visits"],s.summaryStudy);
-  renderTable("summarySite",["Site","Unique Visits"],s.summarySite);
+  if(s.summaryPromise){
+    s.summaryPromise.then(()=>{
+      renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],s.shiftLog);
+      renderTable("summary",["Employee","Count","Utilization"],s.summary);
+      renderTable("summaryStudy",["Study","Unique Visits"],s.summaryStudy);
+      renderTable("summarySite",["Site","Unique Visits"],s.summarySite);
+    });
+  }
 }
-window.renderReports = renderReports;
-
 function renderTable(id,hdrs,rows){
   let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
-  rows.forEach(r=>{
-    html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>";
-  });
+  rows.forEach(r=>{ html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>"; });
   html += "</table>";
   document.getElementById(id).innerHTML = html;
 }
 
-/* ===== Directory helpers for Reports ===== */
+/* ===== Directory Map Helper ===== */
 function getDirectoryMap(){
   const map={};
   directoryHot.getData().forEach(r=>{
@@ -526,164 +509,120 @@ function getDirectoryMap(){
   return map;
 }
 
-/* ===== Firebase Save/Load (months and directory) ===== */
+/* ===== Firebase Save/Load Schedule ===== */
 async function saveMonthToFirebase(y,m){
-  const key=monthKey(y,m); const state=monthStore[key]; if(!state) return;
+  const key = monthKey(y,m);
+  const state = monthStore[key];
   try{
-    const payload = {
-      data: JSON.stringify(state.data || []),
-      bodyRows: JSON.stringify(state.bodyRows || []),
-      meta: JSON.stringify(state.meta || {})
-    };
-    await setDoc(doc(db,"months",key), payload);
+    await setDoc(doc(db,"months",key),{
+      bodyRows: state.bodyRows,
+      meta: JSON.stringify(state.meta),
+      data: JSON.stringify(state.data),
+      updatedAt: serverTimestamp()
+    });
   }catch(e){ console.error("Save error", e); }
 }
 async function loadMonthFromFirebase(y,m){
-  const key=monthKey(y,m);
+  const key = monthKey(y,m);
   try{
     const snap = await getDoc(doc(db,"months",key));
     if(snap.exists()){
-      const raw = snap.data();
+      const raw=snap.data();
       monthStore[key] = {
-        data: JSON.parse(raw.data || "[]"),
-        bodyRows: JSON.parse(raw.bodyRows || "[]"),
-        meta: JSON.parse(raw.meta || "{}"),
+        bodyRows: raw.bodyRows||[],
+        meta: raw.meta ? JSON.parse(raw.meta):{},
+        data: raw.data ? JSON.parse(raw.data):[],
         calendar: buildWeekMatrix(y,m,numWeeks(y,m)),
-        dayMeta:{},
-        shiftLog:[], summary:[], summaryStudy:[], summarySite:[],
-        loaded:true
+        shiftLog:[], summary:[], summaryStudy:[], summarySite:[], loaded:true
       };
     }
   }catch(e){ console.error("Load error", e); }
 }
 
 /* ===== Init ===== */
-await loadDirectoryFromFirebase();
-renderMonth();
+window.addEventListener('DOMContentLoaded', async ()=>{
+  await loadDirectoryFromFirebase();
+  renderMonth();
+});
+
 </script>
 
 <style>
-  body { font-family: Arial, sans-serif; margin: 18px; }
-  nav { margin-bottom: 12px; }
-  nav button { margin-right: 8px; }
-  .page { display: none; }
-  .page.active { display: block; }
-
-  .palette { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
-  .swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
-  .swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
-  .handsontable th { background:#eee !important; }
-  td.day-sep { border-right: 1px solid #aaa !important; }
-
-  table.out { border-collapse: collapse; width:100%; margin-top:10px; }
-  table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
-  table.out th { background:#eee; }
-
-  /* Scheduler layout with sidebar */
-  .scheduler-wrap { display:flex; gap:16px; align-items:flex-start; }
-  #grid { flex: 1 1 auto; min-width: 0; }
-  #availabilitySidebar {
-    width: 260px; border:1px solid #ddd; border-radius:8px; padding:10px;
-    background:#fafafa; flex: 0 0 auto; max-height: 80vh; overflow:auto;
-  }
-  .aside-title { font-weight:700; margin-bottom:8px; }
-  .emp-row { margin:4px 0; font-size: 13px; }
-  .emp-name { font-weight:600; }
-
-  /* Availability modal */
-  #availabilityModal {
-    position: fixed; inset:0; display:none; align-items:center; justify-content:center;
-    background: rgba(0,0,0,0.35); z-index: 9999;
-  }
-  #availabilityModal.open { display:flex; }
-  .modal-card {
-    background:#fff; border-radius:10px; padding:16px; width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-  }
-  .modal-header { font-weight:700; margin-bottom:10px; }
-  .modal-row { margin:8px 0; }
-  .days-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-  .daychip {
-    border:1px solid #bbb; border-radius:6px; padding:6px 10px; background:#fff; cursor:pointer; font-size:13px;
-  }
-  .daychip.selected { background:#304ffe; color:#fff; border-color:#304ffe; }
-  .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
+body { font-family: Arial, sans-serif; margin: 18px; }
+nav { margin-bottom: 12px; }
+nav button { margin-right: 8px; }
+.page { display: none; }
+.page.active { display: block; }
+.palette { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
+.swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
+.swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
+.handsontable th { background:#eee !important; }
+td.day-sep { border-right: 1px solid #aaa !important; }
+table.out { border-collapse: collapse; width:100%; margin-top:10px; }
+table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
+table.out th { background:#eee; }
+#availabilitySidebar { position:absolute; top:100px; right:20px; width:220px; background:#fafafa; border:1px solid #ccc; padding:10px; font-size:13px; }
+#availabilitySidebar .aside-title { font-weight:bold; margin-bottom:6px; }
+.emp-row { margin-bottom:4px; }
+.emp-name { font-weight:bold; }
+/* modal */
+#availabilityModal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;}
+#availabilityModal.open{display:flex;}
+#availabilityModal .modal-content{background:#fff;padding:20px;border-radius:8px;width:400px;max-height:80%;overflow:auto;}
+.daychip{margin:2px;padding:4px 8px;cursor:pointer;}
+.daychip.selected{background:#f28b82;color:#fff;}
 </style>
 </head>
-
 <body>
-  <h1>Scheduler App</h1>
-  <nav>
-    <button onclick="showPage('schedulerPage')">Scheduler</button>
-    <button onclick="showPage('directoryPage')">Directory</button>
-    <button onclick="showPage('reportsPage')">Reports</button>
-  </nav>
+<h1>Scheduler App</h1>
+<nav>
+  <button onclick="showPage('schedulerPage')">Scheduler</button>
+  <button onclick="showPage('directoryPage')">Directory</button>
+  <button onclick="showPage('reportsPage')">Reports</button>
+</nav>
 
-  <!-- Scheduler Page -->
-  <div id="schedulerPage" class="page active">
-    <h2>Monthly Scheduler</h2>
-    <div class="toolbar">
-      <button onclick="prevMonth()">◀ Prev</button>
-      <span id="monthLabel"></span>
-      <button onclick="nextMonth()">Next ▶</button>
-      <span style="margin-left:12px;"><b>Fill color:</b></span>
-      <div class="palette" id="palette"></div>
-      <span style="margin-left:12px;"><b>Rows:</b></span>
-      <input id="rowsToModify" type="number" min="1" value="1" style="width:60px;">
-      <button onclick="addRows()">+ Add</button>
-      <button onclick="delRows()">– Delete</button>
-    </div>
-
-    <div class="scheduler-wrap">
-      <div id="grid"></div>
-      <aside id="availabilitySidebar">
-        <div class="aside-title">Availability</div>
-        <div class="aside-body">—</div>
-      </aside>
-    </div>
+<div id="schedulerPage" class="page active">
+  <h2>Monthly Scheduler</h2>
+  <div class="toolbar">
+    <button onclick="prevMonth()">◀ Prev</button>
+    <span id="monthLabel"></span>
+    <button onclick="nextMonth()">Next ▶</button>
+    <span style="margin-left:12px;"><b>Fill color:</b></span>
+    <div class="palette" id="palette"></div>
+    <span style="margin-left:12px;"><b>Rows:</b></span>
+    <input id="rowsToModify" type="number" min="1" value="1" style="width:60px;">
+    <button onclick="addRows()">+ Add</button>
+    <button onclick="delRows()">– Delete</button>
   </div>
+  <div id="grid"></div>
+  <div id="availabilitySidebar"></div>
+</div>
 
-  <!-- Directory Page -->
-  <div id="directoryPage" class="page">
-    <h2>Email Directory</h2>
-    <div id="directory"></div>
-    <p style="margin-top:8px; font-size:12px; color:#555;">Tip: click “Set ▶” to add unavailable days.</p>
-  </div>
+<div id="directoryPage" class="page">
+  <h2>Email Directory</h2>
+  <div id="directory"></div>
+</div>
 
-  <!-- Availability Modal -->
-  <div id="availabilityModal">
-    <div class="modal-card">
-      <div class="modal-header" id="availabilityModalTitle">Set Unavailable Days</div>
-      <div class="modal-row">
-        <label><b>Month</b>:
-          <input type="month" id="availabilityMonth">
-        </label>
-      </div>
-      <div class="modal-row">
-        <b>Select days NOT available:</b>
-        <div class="days-grid" id="daysGrid"></div>
-      </div>
-      <div class="modal-actions">
-        <button id="cancelAvailabilityBtn">Cancel</button>
-        <button id="saveAvailabilityBtn">Save</button>
-      </div>
-    </div>
-  </div>
+<div id="reportsPage" class="page">
+  <h2>Reports</h2>
+  <label>Choose Month: <select id="monthSelect"></select></label>
+  <button onclick="renderReports()">Generate Report</button>
+  <h3>ShiftLog</h3><div id="shiftLog"></div>
+  <h3>Employee Summary</h3><div id="summary"></div>
+  <h3>Study Visits</h3><div id="summaryStudy"></div>
+  <h3>Site Visits</h3><div id="summarySite"></div>
+</div>
 
-  <!-- Reports Page -->
-  <div id="reportsPage" class="page">
-    <h2>Reports</h2>
-    <label>Choose Month:
-      <select id="monthSelect"></select>
-    </label>
-    <button onclick="renderReports()">Generate Report</button>
-    <h3>ShiftLog</h3>
-    <div id="shiftLog"></div>
-    <h3>Employee Summary</h3>
-    <div id="summary"></div>
-    <h3>Study Visits</h3>
-    <div id="summaryStudy"></div>
-    <h3>Site Visits</h3>
-    <div id="summarySite"></div>
+<!-- Availability Modal -->
+<div id="availabilityModal">
+  <div class="modal-content">
+    <h3 id="availabilityModalTitle">Set Unavailable Days</h3>
+    <label>Month: <input type="month" id="availabilityMonth"></label>
+    <div id="daysGrid"></div>
+    <button id="saveAvailabilityBtn">Save</button>
+    <button id="cancelAvailabilityBtn">Cancel</button>
   </div>
+</div>
+
 </body>
 </html>
