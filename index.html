@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
 
-<!-- Firebase module: exposes Firestore via window.__fire so the rest of your code stays non-module -->
+<!-- Firebase (module): expose Firestore to the non-module app code via window.__fire -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
   import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
@@ -24,7 +24,7 @@
   const app = initializeApp(firebaseConfig);
   const db = getFirestore(app);
 
-  // expose the bits we need to the non-module script
+  // Expose Firestore bits to the rest of the app (which remains non-module)
   window.__fire = { db, doc, setDoc, getDoc, onSnapshot };
 </script>
 
@@ -98,9 +98,9 @@ let monthStore={}, current=new Date(), hot, directoryHot;
 let lastSel=null, clipboardMeta=null;
 const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
-const _subscribedMonths = new Set(); // avoid duplicate realtime listeners
+const _subscribedMonths = new Set(); // prevent duplicate realtime listeners
 
-/* ---------------- Firebase helpers (called only if window.__fire exists) ---------------- */
+/* ---------------- Firebase helpers ---------------- */
 async function saveMonthToFirebase(key){
   if(!window.__fire) return;
   const state = monthStore[key];
@@ -112,7 +112,6 @@ async function saveMonthToFirebase(key){
     meta: state.meta
   });
 }
-
 async function loadMonthFromFirebase(y, m){
   if(!window.__fire) return false;
   const key = monthKey(y,m);
@@ -120,7 +119,7 @@ async function loadMonthFromFirebase(y, m){
   const snap = await getDoc(doc(db, "months", key));
   if(snap.exists()){
     const d = snap.data();
-    // Merge into the locally-built month (preserves calendar/day headers)
+    // Merge into the locally-built month
     monthStore[key].data = d.data;
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = d.meta || {};
@@ -128,7 +127,6 @@ async function loadMonthFromFirebase(y, m){
   }
   return false;
 }
-
 function subscribeMonthRealtime(y, m){
   if(!window.__fire) return;
   const key = monthKey(y,m);
@@ -142,6 +140,7 @@ function subscribeMonthRealtime(y, m){
     monthStore[key].data = d.data;
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = d.meta || {};
+    bodyRows = monthStore[key].bodyRows.slice();    // keep renderer’s weekStarts aligned
     if(hot){
       hot.loadData(monthStore[key].data);
       hot.render();
@@ -229,61 +228,33 @@ async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
 
+  // Build a fresh blank month first (headers + calendar)
   if(!monthStore[key]){
-    // ... your existing blank build logic ...
-    monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,
-                     shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-
-    // 🔹 Try merging Firestore
-    const found = await loadMonthFromFirebase(y,m);
-    // 🔹 If Firestore data exists, refresh bodyRows too
-    if(found){
-      bodyRows = monthStore[key].bodyRows.slice();
+    const br=Array(weeks).fill(8);
+    const data=buildDataFor(y,m,weeks,br);
+    const matrix=buildWeekMatrix(y,m,weeks);
+    const dayMeta={};
+    let acc=0;
+    for(let w=0;w<weeks;w++){
+      for(let d=0;d<DAYS_PER_WEEK;d++){
+        const c=d*COLS_PER_DAY;
+        data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();
+        dayMeta[`${acc}:${c}`]=matrix[w][d];
+      }
+      acc+=1+br[w];
     }
-    // 🔹 Subscribe for realtime updates
-    subscribeMonthRealtime(y,m);
-  }
-
-  bodyRows=monthStore[key].bodyRows.slice();
-  document.getElementById("monthLabel").textContent=
-     current.toLocaleString('default',{month:'long'})+" "+y;
-
-  if(hot) hot.destroy();
-  hot=new Handsontable(document.getElementById('grid'),{
-    data:monthStore[key].data,  // 🔹 Always use possibly-loaded data
-    colHeaders:false,rowHeaders:true,
-    columns:Array.from({length:TOTAL_COLS},()=>({type:'text'})),
-    licenseKey:'non-commercial-and-evaluation',
-    contextMenu:true,
-    cells:(r,c)=>{let props={renderer:colorRenderer};
-                  if(weekStarts().includes(r)) props.readOnly=true; return props;},
-    afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
-      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
-        const key=monthKey(current.getFullYear(),current.getMonth());
-        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
-        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
-      }});},
-    afterPaste:(data,coords)=>{if(!clipboardMeta)return;
-      const {startRow,startCol}=coords[0];const key=monthKey(current.getFullYear(),current.getMonth());
-      clipboardMeta.forEach(item=>{
-        if(item.color){
-          const rr=startRow+item.r,cc=startCol+item.c;
-          monthStore[key].meta[`${rr}:${cc}`]=item.color;
-        }});
-      hot.render(); saveMonthToFirebase(key);},
-    afterChange:()=>{ saveMonthToFirebase(key); }
-  });
-}
     monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
 
-    // Try merging an existing month from Firestore; if none, we keep this blank one.
+    // Try to merge Firestore content (if exists). If not, we keep the blank one.
     await loadMonthFromFirebase(y,m);
-    // Begin realtime sync
+    // Start realtime updates for this month
     subscribeMonthRealtime(y,m);
   }
+
+  // Show current month (either loaded or blank)
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
+
   if(hot) hot.destroy();
   hot=new Handsontable(document.getElementById('grid'),{
     data:monthStore[key].data,
@@ -356,7 +327,7 @@ directoryHot=new Handsontable(document.getElementById('directory'),{
 });
 function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
 
-/* ---------------- Process Schedule ---------------- */
+/* ---------------- Process Schedule (Parsing) ---------------- */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -482,7 +453,6 @@ function refreshMonthSelect(){
     o.value=k; o.textContent=k; sel.appendChild(o);
   });
 }
-
 function renderReports(){
   const sel=document.getElementById('monthSelect').value;
   if(!sel) return;
@@ -507,7 +477,6 @@ function renderReports(){
     s.summarySite
   );
 }
-
 function renderTable(id,hdrs,rows){
   let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
   rows.forEach(r=>{
