@@ -6,7 +6,7 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
 
-<!-- Firebase (v10 modular) -->
+<!-- Firebase -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
   import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
@@ -100,12 +100,21 @@ const COLS_PER_DAY=2, DAYS_PER_WEEK=7, TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
 let bodyRows=[];
 const _subscribedMonths = new Set();
 
-/* ---------------- Utils ---------------- */
+/* ---------------- Basic Utils ---------------- */
 function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
+function showPage(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  if(id==='reportsPage') refreshMonthSelect();
+}
+
+/* ---------------- Calendar Helpers ---------------- */
 function startOfCalendar(year, monthIdx){
   const first=new Date(year,monthIdx,1);
-  const dow=(first.getDay()+6)%7; 
-  const d=new Date(first); d.setDate(first.getDate()-dow); return d;
+  const dow=(first.getDay()+6)%7; // Mon=0
+  const d=new Date(first);
+  d.setDate(first.getDate()-dow);
+  return d;
 }
 function numWeeks(year, monthIdx){
   const start=startOfCalendar(year,monthIdx);
@@ -131,6 +140,34 @@ function buildDataFor(y,m,weeks,br){
   const rows=br.reduce((s,b)=>s+1+b,0);
   return Array.from({length:rows},()=>Array(TOTAL_COLS).fill(""));
 }
+
+/* ---------------- Renderer ---------------- */
+function colorRenderer(instance, td, row, col, prop, value, cellProps){
+  Handsontable.renderers.TextRenderer.apply(this, arguments);
+
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  const color=monthStore[key]?.meta?.[`${row}:${col}`];
+  if(color) td.style.background=color;
+
+  // Grey-out out-of-month days
+  const state = monthStore[key];
+  if (state && state.calendar) {
+    const weekIdx = weekIndexForRow(row);
+    const dayIdx = Math.floor(col / 2);
+    if (weekIdx >= 0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth) {
+      td.style.background = "#f0f0f0";
+      td.style.color = "#999";
+    }
+  }
+
+  if(weekStarts().includes(row)){
+    td.style.background="#e0e0e0";
+    td.style.fontWeight="600";
+  }
+  if(col%2===1) td.classList.add('day-sep');
+}
+
+/* ---------------- Scheduler Helpers ---------------- */
 function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
 function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 function rebuildCalendarFor(y,m,key){
@@ -149,42 +186,50 @@ function rebuildCalendarFor(y,m,key){
   monthStore[key].dayMeta=dayMeta;
 }
 
-/* ---------------- Firebase Helpers ---------------- */
+/* ---------------- Firebase Save/Load (with debug logs) ---------------- */
 async function saveMonthToFirebase(key){
   if(!window.__fire) return;
   const state = monthStore[key];
   if(!state) return;
   const { db, doc, setDoc } = window.__fire;
   try{
+    console.log("[SAVE] ->", key, { rows: state.data.length, cols: state.data?.[0]?.length, bodyRows: state.bodyRows, metaKeys: Object.keys(state.meta||{}).length });
     await setDoc(doc(db,"months",key),{
-      data: JSON.stringify(state.data),
-      bodyRows: state.bodyRows,
-      meta: JSON.stringify(state.meta||{})
+      data: JSON.stringify(state.data),        // store 2D array as JSON string
+      bodyRows: state.bodyRows,                // array of week body row counts
+      meta: JSON.stringify(state.meta||{})     // color meta as JSON
     });
-  }catch(e){ console.error("Save failed:", e); }
+    console.log("[SAVE OK]", key);
+  }catch(e){ console.error("[SAVE ERROR]", key, e); }
 }
 async function loadMonthFromFirebase(y,m){
   if(!window.__fire) return false;
   const key=monthKey(y,m);
   const { db, doc, getDoc } = window.__fire;
-  const snap=await getDoc(doc(db,"months",key));
-  if(!snap.exists()) return false;
-  const d=snap.data();
-  if(!monthStore[key]) return false;
   try{
+    const snap=await getDoc(doc(db,"months",key));
+    if(!snap.exists()){ console.log("[LOAD] No doc for", key); return false; }
+    const d=snap.data();
+    if(!monthStore[key]) return false;
+
     monthStore[key].data = JSON.parse(d.data);
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = JSON.parse(d.meta || "{}");
     rebuildCalendarFor(y,m,key);
-    if(hot){ hot.loadData(monthStore[key].data); hot.render(); }
-  }catch(e){ console.error("Parse error:", e); return false; }
-  return true;
+
+    console.log("[LOAD OK]", key, { rows: monthStore[key].data.length, bodyRows: monthStore[key].bodyRows });
+    return true;
+  }catch(e){
+    console.error("[LOAD ERROR]", key, e);
+    return false;
+  }
 }
 function subscribeMonthRealtime(y,m){
   if(!window.__fire) return;
   const key=monthKey(y,m);
   if(_subscribedMonths.has(key)) return;
   const { db, doc, onSnapshot } = window.__fire;
+
   _subscribedMonths.add(key);
   onSnapshot(doc(db,"months",key),(snap)=>{
     if(!snap.exists()) return;
@@ -196,37 +241,23 @@ function subscribeMonthRealtime(y,m){
       monthStore[key].meta = JSON.parse(d.meta || "{}");
       rebuildCalendarFor(y,m,key);
       bodyRows = monthStore[key].bodyRows.slice();
-      if(hot){ hot.loadData(monthStore[key].data); hot.render(); }
-    }catch(e){ console.error("Realtime parse error:", e); }
+
+      console.log("[REALTIME] <-", key, { rows: monthStore[key].data.length, bodyRows: monthStore[key].bodyRows });
+
+      if(hot){
+        hot.loadData(monthStore[key].data);
+        hot.render();
+      }
+    }catch(e){ console.error("[REALTIME ERROR]", key, e); }
   });
 }
 
-/* ---------------- Renderer ---------------- */
-function colorRenderer(instance, td, row, col, prop, value, cellProps){
-  Handsontable.renderers.TextRenderer.apply(this, arguments);
-  const key=monthKey(current.getFullYear(),current.getMonth());
-  const color=monthStore[key]?.meta?.[`${row}:${col}`];
-  if(color) td.style.background=color;
-  const state = monthStore[key];
-  if (state && state.calendar) {
-    const weekIdx = weekIndexForRow(row);
-    const dayIdx = Math.floor(col / 2);
-    if (weekIdx >= 0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth) {
-      td.style.background = "#f0f0f0";
-      td.style.color = "#999";
-    }
-  }
-  if(weekStarts().includes(row)){
-    td.style.background="#e0e0e0"; td.style.fontWeight="600";
-  }
-  if(col%2===1) td.classList.add('day-sep');
-}
-
-/* ---------------- Scheduler ---------------- */
+/* ---------------- renderMonth (load-before-render) ---------------- */
 async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
 
+  // Build fresh month scaffolding if not present
   if(!monthStore[key]){
     const br=Array(weeks).fill(8);
     const data=buildDataFor(y,m,weeks,br);
@@ -242,16 +273,16 @@ async function renderMonth(){
       acc+=1+br[w];
     }
     monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-
-    // 🔹 Load from Firebase before rendering
-    const loaded = await loadMonthFromFirebase(y,m);
-    subscribeMonthRealtime(y,m);
-    if(loaded){ bodyRows = monthStore[key].bodyRows.slice(); }
   }
+
+  // Try to load from Firebase BEFORE drawing the grid
+  const loaded = await loadMonthFromFirebase(y,m);
+  subscribeMonthRealtime(y,m);
 
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
 
+  // Now create the grid
   if(hot) hot.destroy();
   hot=new Handsontable(document.getElementById('grid'),{
     data:monthStore[key].data,
@@ -271,6 +302,8 @@ async function renderMonth(){
       clipboardMeta.forEach(item=>{if(item.color){const rr=startRow+item.r,cc=startCol+item.c;monthStore[key].meta[`${rr}:${cc}`]=item.color;}});
       hot.render(); saveMonthToFirebase(key);}
   });
+
+  console.log("[RENDER] month", key, { loaded });
 }
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
 function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
@@ -339,7 +372,7 @@ function getDirectoryMap(){
   return map;
 }
 
-/* ---------------- Process Schedule ---------------- */
+/* ---------------- Process Schedule (Reports parsing) ---------------- */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -349,11 +382,7 @@ function parseSchedule(y, m) {
   const br = state.bodyRows;
   const calendar = state.calendar;
 
-  function startsFrom(brArr) {
-    const out = []; let acc = 0;
-    for (let i = 0; i < brArr.length; i++) { out.push(acc); acc += 1 + brArr[i]; }
-    return out;
-  }
+  function startsFrom(brArr) { const out=[]; let acc=0; for (let i=0;i<brArr.length;i++){ out.push(acc); acc+=1+brArr[i]; } return out; }
   const starts = startsFrom(br);
   function weekIndexForRowLocal(rowIdx) {
     for (let i = 0; i < br.length; i++) {
@@ -385,7 +414,7 @@ function parseSchedule(y, m) {
       if (study && visit) {
         const wk = weekIndexForRowLocal(r);
         const dayIdx = Math.floor(c / 2);
-        let dateStr = `${y}-${m+1}`;
+        let dateStr = `${y}-${m + 1}`;
         let dateObj = null;
         if (wk >= 0 && calendar && calendar[wk] && calendar[wk][dayIdx]) {
           dateObj = calendar[wk][dayIdx].date;
@@ -406,7 +435,7 @@ function parseSchedule(y, m) {
           if (leftU === "INV") { pi = right; rr++; continue; }
           if (left === "Site") { site = right; rr++; break; }
 
-          if (right && !forbidden.includes(leftU)) {
+          if (right && !["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)) {
             roles.push({ role: left, emp: right });
           }
           rr++;
@@ -423,6 +452,7 @@ function parseSchedule(y, m) {
           if (!studyVisits[study]) studyVisits[study] = {};
           if (!studyVisits[study][dKey]) studyVisits[study][dKey] = new Set();
           if (site) studyVisits[study][dKey].add(site);
+
           if (site) {
             if (!siteVisits[site]) siteVisits[site] = new Set();
             siteVisits[site].add(dKey);
@@ -446,27 +476,44 @@ function parseSchedule(y, m) {
   state.summarySite = Object.entries(siteVisits).map(([site, dates]) => [site, dates.size]);
 }
 
-/* ---------------- Reports ---------------- */
+/* ---------------- Reports UI ---------------- */
 function refreshMonthSelect(){
   const sel=document.getElementById('monthSelect');
   sel.innerHTML="";
   Object.keys(monthStore).sort().forEach(k=>{
-    const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o);
+    const o=document.createElement('option');
+    o.value=k; o.textContent=k; sel.appendChild(o);
   });
 }
 function renderReports(){
-  const sel=document.getElementById('monthSelect').value; if(!sel) return;
+  const sel=document.getElementById('monthSelect').value;
+  if(!sel) return;
   const [y,m]=sel.split('-').map(Number);
   parseSchedule(y, m-1);
   const s=monthStore[sel];
-  renderTable("shiftLog", ["Date","Study","Visit","Role","Employee","Email","Site","PI"], s.shiftLog);
-  renderTable("summary", ["Employee","Count"], s.summary);
-  renderTable("summaryStudy", ["Study","Unique Visits"], s.summaryStudy);
-  renderTable("summarySite", ["Site","Unique Visits"], s.summarySite);
+
+  renderTable("shiftLog",
+    ["Date","Study","Visit","Role","Employee","Email","Site","PI"],
+    s.shiftLog
+  );
+  renderTable("summary",
+    ["Employee","Count"],
+    s.summary
+  );
+  renderTable("summaryStudy",
+    ["Study","Unique Visits"],
+    s.summaryStudy
+  );
+  renderTable("summarySite",
+    ["Site","Unique Visits"],
+    s.summarySite
+  );
 }
 function renderTable(id,hdrs,rows){
   let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
-  rows.forEach(r=>{ html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>"; });
+  rows.forEach(r=>{
+    html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>";
+  });
   html += "</table>";
   document.getElementById(id).innerHTML = html;
 }
