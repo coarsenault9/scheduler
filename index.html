@@ -69,8 +69,8 @@
     <div id="summarySite"></div>
   </div>
 
+<!-- Firebase -->
 <script type="module">
-/* ---------------- Firebase Setup ---------------- */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
 
@@ -86,7 +86,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-// Expose helpers
 window.__fire = { db, doc, setDoc, getDoc, onSnapshot };
 </script>
 
@@ -106,7 +105,7 @@ async function saveMonthToFirebase(key){
   const { db, doc, setDoc } = window.__fire;
   try {
     await setDoc(doc(db, "months", key), {
-      data: JSON.stringify(state.data),   // 🔹 store as string
+      data: JSON.stringify(state.data),
       bodyRows: state.bodyRows,
       meta: state.meta
     });
@@ -121,9 +120,25 @@ async function loadMonthFromFirebase(y, m){
   if(snap.exists()){
     const d = snap.data();
     if(!monthStore[key]) return false;
-    monthStore[key].data = JSON.parse(d.data);   // 🔹 restore array
+    monthStore[key].data = JSON.parse(d.data);
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = d.meta || {};
+
+    // 🔹 rebuild calendar/dayMeta
+    const weeks = numWeeks(y,m);
+    const matrix = buildWeekMatrix(y,m,weeks);
+    const dayMeta = {};
+    let acc = 0;
+    for(let w=0; w<weeks; w++){
+      for(let d2=0; d2<DAYS_PER_WEEK; d2++){
+        const c = d2*COLS_PER_DAY;
+        dayMeta[`${acc}:${c}`] = matrix[w][d2];
+      }
+      acc += 1 + monthStore[key].bodyRows[w];
+    }
+    monthStore[key].calendar = matrix;
+    monthStore[key].dayMeta = dayMeta;
+
     return true;
   }
   return false;
@@ -142,6 +157,22 @@ function subscribeMonthRealtime(y, m){
     monthStore[key].data = JSON.parse(d.data);
     monthStore[key].bodyRows = d.bodyRows;
     monthStore[key].meta = d.meta || {};
+
+    // 🔹 rebuild calendar/dayMeta
+    const weeks = numWeeks(y,m);
+    const matrix = buildWeekMatrix(y,m,weeks);
+    const dayMeta = {};
+    let acc = 0;
+    for(let w=0; w<weeks; w++){
+      for(let d2=0; d2<DAYS_PER_WEEK; d2++){
+        const c = d2*COLS_PER_DAY;
+        dayMeta[`${acc}:${c}`] = matrix[w][d2];
+      }
+      acc += 1 + monthStore[key].bodyRows[w];
+    }
+    monthStore[key].calendar = matrix;
+    monthStore[key].dayMeta = dayMeta;
+
     bodyRows = monthStore[key].bodyRows.slice();
     if(hot){
       hot.loadData(monthStore[key].data);
@@ -161,7 +192,7 @@ function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
 /* ---------------- Calendar Helpers ---------------- */
 function startOfCalendar(year, monthIdx){
   const first=new Date(year,monthIdx,1);
-  const dow=(first.getDay()+6)%7; // Mon=0
+  const dow=(first.getDay()+6)%7;
   const d=new Date(first);
   d.setDate(first.getDate()-dow);
   return d;
@@ -180,10 +211,7 @@ function buildWeekMatrix(year, monthIdx, weeks){
     for(let d=0;d<DAYS_PER_WEEK;d++){
       const cell=new Date(start);
       cell.setDate(start.getDate()+w*7+d);
-      row.push({
-        date: new Date(cell),
-        inMonth: cell.getMonth()===monthIdx
-      });
+      row.push({date:new Date(cell),inMonth:cell.getMonth()===monthIdx});
     }
     matrix.push(row);
   }
@@ -199,11 +227,9 @@ function buildDataFor(y,m,weeks,br){
 /* ---------------- Renderer ---------------- */
 function colorRenderer(instance, td, row, col, prop, value, cellProps){
   Handsontable.renderers.TextRenderer.apply(this, arguments);
-
   const key=monthKey(current.getFullYear(),current.getMonth());
   const color=monthStore[key]?.meta?.[`${row}:${col}`];
   if(color) td.style.background=color;
-
   const state = monthStore[key];
   if (state && state.calendar) {
     const weekIdx = weekIndexForRow(row);
@@ -213,7 +239,6 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
       td.style.color = "#999";
     }
   }
-
   if(weekStarts().includes(row)){
     td.style.background="#e0e0e0";
     td.style.fontWeight="600";
@@ -228,7 +253,6 @@ function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRow
 async function renderMonth(){
   const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
-
   if(!monthStore[key]){
     const br=Array(weeks).fill(8);
     const data=buildDataFor(y,m,weeks,br);
@@ -245,14 +269,11 @@ async function renderMonth(){
     }
     monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,
                      shiftLog:[],summary:[],summaryStudy:[],summarySite:[]};
-
     await loadMonthFromFirebase(y,m);
     subscribeMonthRealtime(y,m);
   }
-
   bodyRows=monthStore[key].bodyRows.slice();
   document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
-
   if(hot) hot.destroy();
   hot=new Handsontable(document.getElementById('grid'),{
     data:monthStore[key].data,
@@ -329,150 +350,44 @@ function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
   if (!state) return;
-
   const data = state.data;
   const br = state.bodyRows;
   const calendar = state.calendar;
-
-  function startsFrom(brArr) {
-    const out = []; let acc = 0;
-    for (let i = 0; i < brArr.length; i++) { out.push(acc); acc += 1 + brArr[i]; }
-    return out;
-  }
-  const starts = startsFrom(br);
-  function weekIndexForRowLocal(rowIdx) {
-    for (let i = 0; i < br.length; i++) {
-      if (rowIdx >= starts[i] && rowIdx <= starts[i] + br[i]) return i;
-    }
-    return -1;
-  }
-  function formatDate(d) {
-    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-  }
-
-  const shiftLog = [];
-  const summaryShifts = {};
-  const studyVisits = {};
-  const siteVisits = {};
-  const emailMap = getDirectoryMap();
-
-  for (let c = 0; c < TOTAL_COLS; c += 2) {
-    let r = 0;
-    const maxRow = data.length;
-
-    while (r < maxRow) {
-      const study = (data[r][c] || "").trim();
-      const visit = (data[r][c + 1] || "").trim();
-
-      const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
-      if (forbidden.includes(study.toUpperCase())) { r++; continue; }
-
-      if (study && visit) {
-        const wk = weekIndexForRowLocal(r);
-        const dayIdx = Math.floor(c / 2);
-        let dateStr = `${y}-${m + 1}`;
-        let dateObj = null;
-        if (wk >= 0 && calendar && calendar[wk] && calendar[wk][dayIdx]) {
-          dateObj = calendar[wk][dayIdx].date;
-          dateStr = formatDate(dateObj);
-        }
-
-        let rr = r + 1;
-        let pi = "";
-        let site = "";
-        const roles = [];
-
-        while (rr < maxRow) {
-          const left = (data[rr][c] || "").trim();
-          const right = (data[rr][c + 1] || "").trim();
-          const leftU = left.toUpperCase();
-
-          if (!left && !right) { rr++; continue; }
-          if (leftU === "INV") { pi = right; rr++; continue; }
-          if (left === "Site") { site = right; rr++; break; }
-
-          if (right && !["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)) {
-            roles.push({ role: left, emp: right });
-          }
-          rr++;
-        }
-
-        roles.forEach(({ role, emp }) => {
-          const email = emailMap[emp.toLowerCase()] || "";
-          shiftLog.push([dateStr, study, visit, role, emp, email, site, pi]);
-          summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
-        });
-
-        if (dateObj) {
-          const dKey = formatDate(dateObj);
-          if (!studyVisits[study]) studyVisits[study] = {};
-          if (!studyVisits[study][dKey]) studyVisits[study][dKey] = new Set();
-          if (site) studyVisits[study][dKey].add(site);
-
-          if (site) {
-            if (!siteVisits[site]) siteVisits[site] = new Set();
-            siteVisits[site].add(dKey);
-          }
-        }
-
-        r = rr;
-        continue;
-      }
-      r++;
-    }
-  }
-
-  state.shiftLog = shiftLog;
-  state.summary = Object.entries(summaryShifts);
-  state.summaryStudy = Object.entries(studyVisits).map(([study, dates]) => {
-    let total = 0; Object.values(dates).forEach(set => total += set.size); return [study, total];
-  });
-  state.summarySite = Object.entries(siteVisits).map(([site, dates]) => [site, dates.size]);
+  function startsFrom(brArr){const out=[];let acc=0;for(let i=0;i<brArr.length;i++){out.push(acc);acc+=1+brArr[i];}return out;}
+  const starts=startsFrom(br);
+  function weekIndexForRowLocal(rowIdx){for(let i=0;i<br.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+br[i])return i;}return -1;}
+  function formatDate(d){return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});}
+  const shiftLog=[], summaryShifts={}, studyVisits={}, siteVisits={}, emailMap=getDirectoryMap();
+  for(let c=0;c<TOTAL_COLS;c+=2){let r=0,maxRow=data.length;
+    while(r<maxRow){const study=(data[r][c]||"").trim();const visit=(data[r][c+1]||"").trim();
+      const forbidden=["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
+      if(forbidden.includes(study.toUpperCase())){r++;continue;}
+      if(study&&visit){const wk=weekIndexForRowLocal(r);const dayIdx=Math.floor(c/2);let dateStr=`${y}-${m+1}`;let dateObj=null;
+        if(wk>=0&&calendar&&calendar[wk]&&calendar[wk][dayIdx]){dateObj=calendar[wk][dayIdx].date;dateStr=formatDate(dateObj);}
+        let rr=r+1, pi="", site="", roles=[];
+        while(rr<maxRow){const left=(data[rr][c]||"").trim(), right=(data[rr][c+1]||"").trim(), leftU=left.toUpperCase();
+          if(!left&&!right){rr++;continue;}
+          if(leftU==="INV"){pi=right;rr++;continue;}
+          if(left==="Site"){site=right;rr++;break;}
+          if(right&&!["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)){roles.push({role:left,emp:right});}
+          rr++;}
+        roles.forEach(({role,emp})=>{const email=emailMap[emp.toLowerCase()]||"";shiftLog.push([dateStr,study,visit,role,emp,email,site,pi]);summaryShifts[emp]=(summaryShifts[emp]||0)+1;});
+        if(dateObj){const dKey=formatDate(dateObj);if(!studyVisits[study])studyVisits[study]={};if(!studyVisits[study][dKey])studyVisits[study][dKey]=new Set();if(site)studyVisits[study][dKey].add(site);if(site){if(!siteVisits[site])siteVisits[site]=new Set();siteVisits[site].add(dKey);}}
+        r=rr;continue;}
+      r++;}}
+  state.shiftLog=shiftLog;state.summary=Object.entries(summaryShifts);
+  state.summaryStudy=Object.entries(studyVisits).map(([study,dates])=>{let total=0;Object.values(dates).forEach(set=>total+=set.size);return [study,total];});
+  state.summarySite=Object.entries(siteVisits).map(([site,dates])=>[site,dates.size]);
 }
 
 /* ---------------- Reports ---------------- */
-function refreshMonthSelect(){
-  const sel=document.getElementById('monthSelect');
-  sel.innerHTML="";
-  Object.keys(monthStore).sort().forEach(k=>{
-    const o=document.createElement('option');
-    o.value=k; o.textContent=k; sel.appendChild(o);
-  });
-}
-
-function renderReports(){
-  const sel=document.getElementById('monthSelect').value;
-  if(!sel) return;
-  const [y,m]=sel.split('-').map(Number);
-  parseSchedule(y, m-1);
-  const s=monthStore[sel];
-
-  renderTable("shiftLog",
-    ["Date","Study","Visit","Role","Employee","Email","Site","PI"],
-    s.shiftLog
-  );
-  renderTable("summary",
-    ["Employee","Count"],
-    s.summary
-  );
-  renderTable("summaryStudy",
-    ["Study","Unique Visits"],
-    s.summaryStudy
-  );
-  renderTable("summarySite",
-    ["Site","Unique Visits"],
-    s.summarySite
-  );
-}
-
-function renderTable(id,hdrs,rows){
-  let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
-  rows.forEach(r=>{
-    html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>";
-  });
-  html += "</table>";
-  document.getElementById(id).innerHTML = html;
-}
+function refreshMonthSelect(){const sel=document.getElementById('monthSelect');sel.innerHTML="";Object.keys(monthStore).sort().forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;sel.appendChild(o);});}
+function renderReports(){const sel=document.getElementById('monthSelect').value;if(!sel)return;const [y,m]=sel.split('-').map(Number);parseSchedule(y,m-1);const s=monthStore[sel];
+  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],s.shiftLog);
+  renderTable("summary",["Employee","Count"],s.summary);
+  renderTable("summaryStudy",["Study","Unique Visits"],s.summaryStudy);
+  renderTable("summarySite",["Site","Unique Visits"],s.summarySite);}
+function renderTable(id,hdrs,rows){let html="<table class='out'><tr>"+hdrs.map(h=>`<th>${h}</th>`).join("")+"</tr>";rows.forEach(r=>{html+="<tr>"+r.map(v=>`<td>${v??""}</td>`).join("")+"</tr>";});html+="</table>";document.getElementById(id).innerHTML=html;}
 
 /* ---------------- Init ---------------- */
 renderMonth();
