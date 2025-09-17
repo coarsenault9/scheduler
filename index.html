@@ -5,11 +5,12 @@
 <title>Scheduler App</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.css">
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
-/* ---------------- Firebase Init ---------------- */
+<script type="module">
+/* ===== Firebase (modular SDK) ===== */
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
 const firebaseConfig = {
   apiKey: "AIzaSyCfwfn-7WFnKNv-rdomdHxWU11WMIk7-NQ",
   authDomain: "crcscheduler.firebaseapp.com",
@@ -22,56 +23,60 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
-/* ---------------- Shared State ---------------- */
+/* ===== Shared State ===== */
 let monthStore = {}, current = new Date(), hot, directoryHot;
 let lastSel = null, clipboardMeta = null;
 const COLS_PER_DAY = 2, DAYS_PER_WEEK = 7, TOTAL_COLS = DAYS_PER_WEEK * COLS_PER_DAY;
 let bodyRows = [];
 
-/* ---------------- Page Switching ---------------- */
+function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
+function pad2(n){return String(n).padStart(2,'0');}
+function daysInMonth(y,m){return new Date(y, m+1, 0).getDate();}
+function empIdFromName(name){ return (name||"").trim().toLowerCase().replace(/[^a-z0-9]+/g,"-"); }
+
+/* ===== Page Switching ===== */
 function showPage(id){
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  if(id === 'reportsPage') refreshMonthSelect();
+  if(id==='reportsPage') refreshMonthSelect();
+  if(id==='schedulerPage') refreshAvailabilitySidebar(current.getFullYear(), current.getMonth());
 }
-// expose for buttons
 window.showPage = showPage;
 
-/* ---------------- Calendar Helpers ---------------- */
-function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
+/* ===== Calendar Helpers ===== */
 function startOfCalendar(year, monthIdx){
-  const first = new Date(year, monthIdx, 1);
+  const first = new Date(year,monthIdx,1);
   const dow = (first.getDay()+6)%7; // Mon=0
   const d = new Date(first);
-  d.setDate(first.getDate() - dow);
+  d.setDate(first.getDate()-dow);
   return d;
 }
 function numWeeks(year, monthIdx){
-  const start = startOfCalendar(year, monthIdx);
-  const end = new Date(year, monthIdx+1, 0);
-  const diff = Math.ceil((end - start)/86400000) + 1;
+  const start = startOfCalendar(year,monthIdx);
+  const end = new Date(year,monthIdx+1,0);
+  const diff = Math.ceil((end-start)/86400000)+1;
   return Math.ceil(diff/7);
 }
 function buildWeekMatrix(year, monthIdx, weeks){
-  const start = startOfCalendar(year, monthIdx);
-  const matrix = [];
-  for(let w=0; w<weeks; w++){
+  const start = startOfCalendar(year,monthIdx);
+  const matrix=[];
+  for(let w=0;w<weeks;w++){
     const row=[];
-    for(let d=0; d<DAYS_PER_WEEK; d++){
-      const cell = new Date(start);
+    for(let d=0;d<DAYS_PER_WEEK;d++){
+      const cell=new Date(start);
       cell.setDate(start.getDate()+w*7+d);
-      row.push({ date:new Date(cell), inMonth: cell.getMonth()===monthIdx });
+      row.push({ date:new Date(cell), inMonth:cell.getMonth()===monthIdx });
     }
     matrix.push(row);
   }
   return matrix;
 }
 function buildDataFor(y,m,weeks,br){
-  const rows = br.reduce((s,b)=>s+1+b,0);
+  const rows=br.reduce((s,b)=>s+1+b,0);
   return Array.from({length:rows},()=>Array(TOTAL_COLS).fill(""));
 }
 
-/* ---------------- Renderer ---------------- */
+/* ===== Renderer ===== */
 function colorRenderer(instance, td, row, col){
   Handsontable.renderers.TextRenderer.apply(this, arguments);
   const key = monthKey(current.getFullYear(), current.getMonth());
@@ -82,82 +87,85 @@ function colorRenderer(instance, td, row, col){
   if (state && state.calendar){
     const weekIdx = weekIndexForRow(row);
     const dayIdx = Math.floor(col/2);
-    if(weekIdx >= 0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth){
+    if(weekIdx>=0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth){
       td.style.background = "#f0f0f0";
       td.style.color = "#999";
     }
   }
   if(weekStarts().includes(row)){
-    td.style.background="#e0e0e0";
-    td.style.fontWeight="600";
+    td.style.background = "#e0e0e0";
+    td.style.fontWeight = "600";
   }
-  if(col % 2 === 1) td.classList.add('day-sep');
+  if(col%2===1) td.classList.add('day-sep');
 }
 
-/* ---------------- Scheduler ---------------- */
-function weekStarts(){ let starts=[], acc=0; for(let i=0;i<bodyRows.length;i++){ starts.push(acc); acc += 1 + bodyRows[i]; } return starts; }
-function weekIndexForRow(rowIdx){ const starts=weekStarts(); for(let i=0;i<bodyRows.length;i++){ if(rowIdx>=starts[i] && rowIdx<=starts[i]+bodyRows[i]) return i; } return -1; }
+/* ===== Scheduler ===== */
+function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){starts.push(acc);acc+=1+bodyRows[i];}return starts;}
+function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
 async function renderMonth(){
-  const y = current.getFullYear(), m = current.getMonth(), key = monthKey(y,m);
-  const weeks = numWeeks(y,m);
+  const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
+  const weeks=numWeeks(y,m);
 
-  // Try loading from Firebase if not present
   if(!monthStore[key]){ await loadMonthFromFirebase(y,m); }
 
-  // If still empty, build a blank month (with header date rows) so new months work
   if(!monthStore[key] || !monthStore[key].data){
-    const br = Array(weeks).fill(8);
-    const data = buildDataFor(y,m,weeks,br);
-    const matrix = buildWeekMatrix(y,m,weeks);
-    const dayMeta = {};
+    const br=Array(weeks).fill(8);
+    const data=buildDataFor(y,m,weeks,br);
+    const matrix=buildWeekMatrix(y,m,weeks);
+    const dayMeta={};
     let acc=0;
-    for(let w=0; w<weeks; w++){
-      for(let d=0; d<DAYS_PER_WEEK; d++){
-        const c = d*COLS_PER_DAY;
-        data[acc][c] = matrix[w][d].date.toLocaleString('default', {weekday:'short'}) + " " + matrix[w][d].date.getDate();
-        dayMeta[`${acc}:${c}`] = matrix[w][d];
+    for(let w=0;w<weeks;w++){
+      for(let d=0;d<DAYS_PER_WEEK;d++){
+        const c=d*COLS_PER_DAY;
+        data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();
+        dayMeta[`${acc}:${c}`]=matrix[w][d];
       }
-      acc += 1 + br[w];
+      acc+=1+br[w];
     }
-    monthStore[key] = {data, bodyRows: br, meta: {}, dayMeta, calendar: matrix, shiftLog:[], summary:[], summaryStudy:[], summarySite:[], loaded:true};
+    monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[],loaded:true};
   }
 
-  // Update UI
   bodyRows = monthStore[key].bodyRows.slice();
-  document.getElementById("monthLabel").textContent = current.toLocaleString('default',{month:'long'}) + " " + y;
+  document.getElementById("monthLabel").textContent = current.toLocaleString('default',{month:'long'})+" "+y;
 
-  // (Re)build grid
   if(hot) hot.destroy();
-  hot = new Handsontable(document.getElementById('grid'),{
-    data: monthStore[key].data,
-    colHeaders:false,
-    rowHeaders:true,
-    columns: Array.from({length:TOTAL_COLS},()=>({type:'text'})),
+  hot=new Handsontable(document.getElementById('grid'),{
+    data:monthStore[key].data,
+    colHeaders:false,rowHeaders:true,
+    columns:Array.from({length:TOTAL_COLS},()=>({type:'text'})),
     licenseKey:'non-commercial-and-evaluation',
     contextMenu:true,
-    cells:(r,c)=>{ let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props; },
+    cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterCopy:(data,coords)=>{ clipboardMeta=[]; coords.forEach(({startRow,startCol,endRow,endCol})=>{
-      for(let r=startRow;r<=endRow;r++) for(let c=startCol;c<=endCol;c++){
+    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
+      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
         const key=monthKey(current.getFullYear(),current.getMonth());
         const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
         clipboardMeta.push({r:r-startRow,c:c-startCol,color});
-      }}); },
-    afterPaste:(data,coords)=>{ if(!clipboardMeta) return; const {startRow,startCol}=coords[0]; const key=monthKey(current.getFullYear(),current.getMonth());
-      clipboardMeta.forEach(item=>{ if(item.color){ const rr=startRow+item.r, cc=startCol+item.c; monthStore[key].meta[`${rr}:${cc}`]=item.color; }});
-      hot.render(); saveMonthToFirebase(y,m); },
+      }});},
+    afterPaste:(data,coords)=>{ if(!clipboardMeta) return;
+      const {startRow,startCol}=coords[0]; const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{
+        if(item.color){
+          const rr=startRow+item.r, cc=startCol+item.c;
+          monthStore[key].meta[`${rr}:${cc}`]=item.color;
+        }
+      });
+      hot.render(); saveMonthToFirebase(y,m);
+    },
     afterChange:()=>{ saveMonthToFirebase(y,m); }
   });
-}
 
-// Month navigation — expose globally so the buttons work
+  // refresh the availability sidebar for this (y,m)
+  refreshAvailabilitySidebar(y,m);
+}
 function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
 function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
 window.prevMonth = prevMonth;
 window.nextMonth = nextMonth;
 
-/* ---------------- Colors ---------------- */
+/* ===== Colors ===== */
 const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8","#e8eaed","#d50000","#c51162","#aa00ff","#304ffe","#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
 (function(){
   const p=document.getElementById('palette');
@@ -176,20 +184,22 @@ const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecb
 })();
 function applyColor(color){
   const sel=lastSel||hot.getSelectedLast(); if(!sel) return;
-  const [r1,c1,r2,c2]=sel; const key=monthKey(current.getFullYear(),current.getMonth());
+  const [r1,c1,r2,c2]=sel;
+  const key=monthKey(current.getFullYear(),current.getMonth());
   if(!monthStore[key].meta) monthStore[key].meta={};
-  for(let r=Math.min(r1,r2); r<=Math.max(r1,r2); r++){
-    if(weekStarts().includes(r)) continue; // don't color header rows
-    for(let c=Math.min(c1,c2); c<=Math.max(c1,c2); c++){
-      if(color) monthStore[key].meta[`${r}:${c}`]=color; else delete monthStore[key].meta[`${r}:${c}`];
+  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){
+    if(weekStarts().includes(r)) continue;
+    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
+      if(color) monthStore[key].meta[`${r}:${c}`]=color;
+      else delete monthStore[key].meta[`${r}:${c}`];
     }
   }
   hot.render();
-  saveMonthToFirebase(current.getFullYear(), current.getMonth());
+  saveMonthToFirebase(current.getFullYear(),current.getMonth());
 }
 window.applyColor = applyColor;
 
-/* ---------------- Add/Delete Rows ---------------- */
+/* ===== Add/Delete Rows ===== */
 function shiftMeta(meta, startRow, delta){
   const newMeta={};
   Object.entries(meta).forEach(([k,v])=>{
@@ -201,8 +211,10 @@ function shiftMeta(meta, startRow, delta){
 }
 function addRows(){
   const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
-  const sel=lastSel||hot.getSelectedLast(); if(!sel) return; const w=weekIndexForRow(sel[0]); if(w<0) return;
-  const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
+  const sel=lastSel||hot.getSelectedLast(); if(!sel) return;
+  const w=weekIndexForRow(sel[0]); if(w<0) return;
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  const start=weekStarts()[w]+1;
   bodyRows[w]+=n; monthStore[key].bodyRows=bodyRows.slice();
   monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);
@@ -210,135 +222,287 @@ function addRows(){
 }
 function delRows(){
   const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
-  const sel=lastSel||hot.getSelectedLast(); if(!sel) return; const w=weekIndexForRow(sel[0]); if(w<0) return;
+  const sel=lastSel||hot.getSelectedLast(); if(!sel) return;
+  const w=weekIndexForRow(sel[0]); if(w<0) return;
   if(bodyRows[w]<=n) return;
-  const key=monthKey(current.getFullYear(),current.getMonth()); const start=weekStarts()[w]+1;
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  const start=weekStarts()[w]+1;
   bodyRows[w]-=n; monthStore[key].bodyRows=bodyRows.slice();
   monthStore[key].data.splice(start,n);
   monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
   renderMonth(); saveMonthToFirebase(current.getFullYear(),current.getMonth());
 }
 window.addRows = addRows;
-window.delRows  = delRows;
+window.delRows = delRows;
 
-/* ---------------- Directory ---------------- */
-directoryHot = new Handsontable(document.getElementById('directory'),{
-  data:[["","",""]],
-  colHeaders:["Name","Email","Phone"],
-  rowHeaders:true,
-  minSpareRows:1,
-  contextMenu:true,
-  licenseKey:'non-commercial-and-evaluation'
+/* ===== Directory (persisted) ===== */
+const directoryContainer = document.getElementById('directory');
+directoryHot = new Handsontable(directoryContainer,{
+  data:[["","","","Set ▶"]], // Name, Email, Phone, Availability button label
+  colHeaders:["Name","Email","Phone","Availability"],
+  columns:[
+    {type:'text'}, {type:'text'}, {type:'text'},
+    {renderer: availabilityButtonRenderer, readOnly:true}
+  ],
+  rowHeaders:true, minSpareRows:1,
+  contextMenu:true, licenseKey:'non-commercial-and-evaluation',
+  afterChange: (changes, source)=>{
+    if(source === 'loadData' || !changes) return;
+    saveDirectoryToFirebase();
+  },
+  afterCreateRow: ()=>saveDirectoryToFirebase(),
+  afterRemoveRow: ()=>saveDirectoryToFirebase(),
 });
-function getDirectoryMap(){
-  const map={};
-  directoryHot.getData().forEach(r=>{
-    const name=(r[0]||"").trim().toLowerCase();
-    const email=(r[1]||"").trim();
-    if(name && email) map[name]=email;
-  });
-  return map;
+
+function availabilityButtonRenderer(instance, td, row, col, prop, value){
+  // Create a clickable button within the cell
+  td.innerHTML = "";
+  const btn = document.createElement('button');
+  btn.textContent = "Set ▶";
+  btn.style.padding = "2px 6px";
+  btn.style.fontSize = "12px";
+  btn.onclick = (e)=>{
+    e.stopPropagation();
+    const name = (directoryHot.getDataAtCell(row,0)||"").trim();
+    if(!name){ alert("Please enter a Name first."); return; }
+    openAvailabilityModal(name);
+  };
+  td.appendChild(btn);
 }
 
-/* ---------------- Reports ---------------- */
-function parseSchedule(y, m) {
-  const key = monthKey(y,m);
-  const state = monthStore[key];
-  if (!state) return;
-  const data = state.data;
-  const br = state.bodyRows;
-  const calendar = state.calendar;
-  function startsFrom(arr){ const out=[]; let acc=0; for(let i=0;i<arr.length;i++){ out.push(acc); acc += 1 + arr[i]; } return out; }
-  const starts = startsFrom(br);
-  function weekIndexForRowLocal(rowIdx){ for(let i=0;i<br.length;i++){ if(rowIdx>=starts[i] && rowIdx<=starts[i]+br[i]) return i; } return -1; }
-  function formatDate(d){ return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }
+async function saveDirectoryToFirebase(){
+  try{
+    const data = directoryHot.getData(); // 2D array (has an extra spare row)
+    const payload = { data: JSON.stringify(data) }; // stringify to avoid nested arrays
+    await setDoc(doc(db,"directory","main"), payload);
+  }catch(e){ console.error("Directory save error", e); }
+}
 
-  const shiftLog = [];
-  const summaryShifts = {};
-  const studyVisits = {};
-  const siteVisits = {};
-  const emailMap = getDirectoryMap();
+async function loadDirectoryFromFirebase(){
+  try{
+    const snap = await getDoc(doc(db,"directory","main"));
+    if(snap.exists()){
+      const raw = snap.data();
+      const arr = JSON.parse(raw.data || "[]");
+      if(Array.isArray(arr) && arr.length){
+        directoryHot.loadData(arr);
+      }
+    }
+  }catch(e){ console.error("Directory load error", e); }
+}
 
-  for (let c=0; c<TOTAL_COLS; c+=2){
+/* ===== Availability modal & save/load ===== */
+const modal = document.getElementById('availabilityModal');
+const modalTitle = document.getElementById('availabilityModalTitle');
+const monthInput = document.getElementById('availabilityMonth');
+const daysGrid = document.getElementById('daysGrid');
+const saveAvailBtn = document.getElementById('saveAvailabilityBtn');
+const cancelAvailBtn = document.getElementById('cancelAvailabilityBtn');
+
+let currentAvailEmployee = null;
+let selectedDays = new Set();
+
+function openAvailabilityModal(employeeName){
+  currentAvailEmployee = employeeName;
+  modalTitle.textContent = `Set Unavailable Days — ${employeeName}`;
+  // default to current month in input[type=month]
+  const y = current.getFullYear();
+  const m = current.getMonth()+1;
+  monthInput.value = `${y}-${pad2(m)}`;
+  // build grid for that month
+  buildDaysGridFromInput();
+  // preload existing availability for that month
+  preloadAvailability(employeeName, y, m-1).then(()=>{});
+  modal.classList.add('open');
+}
+window.openAvailabilityModal = openAvailabilityModal;
+
+function closeAvailabilityModal(){
+  modal.classList.remove('open');
+  currentAvailEmployee = null;
+  selectedDays.clear();
+}
+cancelAvailBtn.addEventListener('click', closeAvailabilityModal);
+
+monthInput.addEventListener('change', buildDaysGridFromInput);
+
+function buildDaysGridFromInput(){
+  daysGrid.innerHTML = "";
+  selectedDays.clear();
+  const [yy,mm] = monthInput.value.split('-').map(Number);
+  if(!yy || !mm) return;
+  const dcount = daysInMonth(yy,mm-1);
+  for(let d=1; d<=dcount; d++){
+    const btn = document.createElement('button');
+    btn.textContent = d;
+    btn.className = "daychip";
+    btn.onclick = ()=>{
+      if(selectedDays.has(d)){ selectedDays.delete(d); btn.classList.remove('selected'); }
+      else { selectedDays.add(d); btn.classList.add('selected'); }
+    };
+    daysGrid.appendChild(btn);
+  }
+}
+
+async function preloadAvailability(employeeName, y, m){
+  const empId = empIdFromName(employeeName);
+  const ym = `${y}-${pad2(m+1)}`;
+  try{
+    const snap = await getDoc(doc(db,"availability", empId, "months", ym));
+    if(snap.exists()){
+      const data = snap.data();
+      const days = Array.isArray(data.days) ? data.days : [];
+      selectedDays = new Set(days);
+      // mark selected in grid
+      Array.from(daysGrid.children).forEach(btn=>{
+        const d = Number(btn.textContent);
+        if(selectedDays.has(d)) btn.classList.add('selected');
+      });
+    }
+  }catch(e){ console.error("Availability preload error", e); }
+}
+
+saveAvailBtn.addEventListener('click', async ()=>{
+  if(!currentAvailEmployee){ closeAvailabilityModal(); return; }
+  const [yy,mm] = monthInput.value.split('-').map(Number);
+  if(!yy || !mm){ alert("Please choose a month."); return; }
+  const empId = empIdFromName(currentAvailEmployee);
+  const ym = `${yy}-${pad2(mm)}`;
+  try{
+    await setDoc(doc(db,"availability", empId, "months", ym), {
+      days: Array.from(selectedDays).sort((a,b)=>a-b),
+      updatedAt: serverTimestamp()
+    });
+    closeAvailabilityModal();
+    // if sidebar is showing this month, refresh it
+    const cy = current.getFullYear(), cm = current.getMonth();
+    if(yy===cy && mm-1===cm) refreshAvailabilitySidebar(cy,cm);
+  }catch(e){ console.error("Availability save error", e); }
+});
+
+/* ===== Availability sidebar (per month) ===== */
+async function refreshAvailabilitySidebar(y,m){
+  const sidebar = document.getElementById('availabilitySidebar');
+  sidebar.innerHTML = `<div class="aside-title">Availability (${y}-${pad2(m+1)})</div><div class="aside-body">Loading…</div>`;
+  const body = sidebar.querySelector('.aside-body');
+
+  // build list of employees from the directory (non-empty names)
+  const rows = directoryHot.getData();
+  const employees = [];
+  rows.forEach(row=>{
+    const name = (row?.[0]||"").trim();
+    if(name) employees.push(name);
+  });
+
+  if(!employees.length){
+    body.textContent = "No employees in the directory.";
+    return;
+  }
+
+  // fetch availability for each employee for this y-m
+  const ym = `${y}-${pad2(m+1)}`;
+  const fragments = [];
+  for(const name of employees){
+    const empId = empIdFromName(name);
+    try{
+      const snap = await getDoc(doc(db,"availability", empId, "months", ym));
+      let days = [];
+      if(snap.exists()){
+        const data = snap.data();
+        days = Array.isArray(data.days) ? data.days : [];
+      }
+      const label = days.length ? days.join(", ") : "—";
+      fragments.push(`<div class="emp-row"><span class="emp-name">${name}:</span> <span class="emp-days">${label}</span></div>`);
+    }catch(e){
+      console.error("Availability load error", e);
+      fragments.push(`<div class="emp-row"><span class="emp-name">${name}:</span> <span class="emp-days">[error]</span></div>`);
+    }
+  }
+  body.innerHTML = fragments.join("");
+}
+
+/* ===== Reports ===== */
+function parseSchedule(y, m){
+  const key=monthKey(y,m); const state=monthStore[key];
+  if(!state) return;
+  const data=state.data, br=state.bodyRows, calendar=state.calendar;
+  function startsFrom(a){const out=[];let acc=0;for(let i=0;i<a.length;i++){out.push(acc);acc+=1+a[i];}return out;}
+  const starts=startsFrom(br);
+  function weekIndexForRowLocal(rowIdx){for(let i=0;i<br.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+br[i])return i;}return -1;}
+  function formatDate(d){return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});}
+
+  const shiftLog=[], summaryShifts={}, studyVisits={}, siteVisits={}, emailMap=getDirectoryMap();
+
+  for(let c=0;c<TOTAL_COLS;c+=2){
     let r=0; const maxRow=data.length;
     while(r<maxRow){
-      const study = (data[r][c]||"").trim();
-      const visit = (data[r][c+1]||"").trim();
+      const study=(data[r][c]||"").trim();
+      const visit=(data[r][c+1]||"").trim();
+      const forbidden=["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
+      if(forbidden.includes(study.toUpperCase())){ r++; continue; }
 
-      const forbidden = ["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
-      if (forbidden.includes(study.toUpperCase())) { r++; continue; }
-
-      if (study && visit){
-        const wk = weekIndexForRowLocal(r);
-        const dayIdx = Math.floor(c/2);
-        let dateStr = `${y}-${m+1}`;
-        let dateObj = null;
-        if (wk>=0 && calendar && calendar[wk] && calendar[wk][dayIdx]){
-          dateObj = calendar[wk][dayIdx].date;
-          dateStr = formatDate(dateObj);
+      if(study && visit){
+        const wk=weekIndexForRowLocal(r);
+        const dayIdx=Math.floor(c/2);
+        let dateStr=`${y}-${m+1}`, dateObj=null;
+        if(wk>=0 && calendar && calendar[wk] && calendar[wk][dayIdx]){
+          dateObj=calendar[wk][dayIdx].date; dateStr=formatDate(dateObj);
         }
-        let rr=r+1, pi="", site=""; const roles=[];
+        let rr=r+1, pi="", site="", roles=[];
         while(rr<maxRow){
-          const left = (data[rr][c]||"").trim();
-          const right= (data[rr][c+1]||"").trim();
-          const leftU = left.toUpperCase();
-          if (!left && !right){ rr++; continue; }
-          if (leftU==="INV"){ pi=right; rr++; continue; }
-          if (left==="Site"){ site=right; rr++; break; }
-          if (right && !["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)){
-            roles.push({role:left, emp:right});
+          const left=(data[rr][c]||"").trim();
+          const right=(data[rr][c+1]||"").trim();
+          const leftU=left.toUpperCase();
+          if(!left && !right){ rr++; continue; }
+          if(leftU==="INV"){ pi=right; rr++; continue; }
+          if(left==="Site"){ site=right; rr++; break; }
+          if(right && !["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)){
+            roles.push({role:left,emp:right});
           }
           rr++;
         }
-        roles.forEach(({role, emp})=>{
-          const email = emailMap[emp.toLowerCase()] || "";
-          shiftLog.push([dateStr, study, visit, role, emp, email, site, pi]);
-          summaryShifts[emp] = (summaryShifts[emp] || 0) + 1;
+        roles.forEach(({role,emp})=>{
+          const email=emailMap[emp.toLowerCase()]||"";
+          shiftLog.push([dateStr,study,visit,role,emp,email,site,pi]);
+          summaryShifts[emp]=(summaryShifts[emp]||0)+1;
         });
 
-        if (dateObj){
-          const dKey = formatDate(dateObj);
-          if (!studyVisits[study]) studyVisits[study] = {};
-          if (!studyVisits[study][dKey]) studyVisits[study][dKey] = new Set();
-          if (site) studyVisits[study][dKey].add(site);
-
-          if (site){
-            if (!siteVisits[site]) siteVisits[site] = new Set();
-            siteVisits[site].add(dKey);
-          }
+        if(dateObj){
+          const dKey=formatDate(dateObj);
+          if(!studyVisits[study]) studyVisits[study]={};
+          if(!studyVisits[study][dKey]) studyVisits[study][dKey]=new Set();
+          if(site) studyVisits[study][dKey].add(site);
+          if(site){ if(!siteVisits[site]) siteVisits[site]=new Set(); siteVisits[site].add(dKey); }
         }
-        r = rr; continue;
+        r=rr; continue;
       }
       r++;
     }
   }
+
   state.shiftLog = shiftLog;
   state.summary = Object.entries(summaryShifts);
   state.summaryStudy = Object.entries(studyVisits).map(([study, dates])=>{
-    let total=0; Object.values(dates).forEach(set=> total += set.size); return [study, total];
+    let total=0; Object.values(dates).forEach(set=> total += set.size); return [study,total];
   });
-  state.summarySite = Object.entries(siteVisits).map(([site, dates])=> [site, dates.size]);
+  state.summarySite = Object.entries(siteVisits).map(([site, dates])=>[site, dates.size]);
 }
-
 function refreshMonthSelect(){
-  const sel = document.getElementById('monthSelect');
-  sel.innerHTML = "";
+  const sel=document.getElementById('monthSelect');
+  sel.innerHTML="";
   Object.keys(monthStore).sort().forEach(k=>{
     const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o);
   });
 }
-
 function renderReports(){
-  const sel = document.getElementById('monthSelect').value;
-  if(!sel) return;
-  const [y,m] = sel.split('-').map(Number);
+  const sel=document.getElementById('monthSelect').value; if(!sel) return;
+  const [y,m]=sel.split('-').map(Number);
   parseSchedule(y, m-1);
-  const s = monthStore[sel];
-
-  renderTable("shiftLog", ["Date","Study","Visit","Role","Employee","Email","Site","PI"], s.shiftLog);
-  renderTable("summary", ["Employee","Count"], s.summary);
-  renderTable("summaryStudy", ["Study","Unique Visits"], s.summaryStudy);
-  renderTable("summarySite", ["Site","Unique Visits"], s.summarySite);
+  const s=monthStore[sel];
+  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],s.shiftLog);
+  renderTable("summary",["Employee","Count"],s.summary);
+  renderTable("summaryStudy",["Study","Unique Visits"],s.summaryStudy);
+  renderTable("summarySite",["Site","Unique Visits"],s.summarySite);
 }
 window.renderReports = renderReports;
 
@@ -351,29 +515,35 @@ function renderTable(id,hdrs,rows){
   document.getElementById(id).innerHTML = html;
 }
 
-/* ---------------- Firebase Save/Load ---------------- */
+/* ===== Directory helpers for Reports ===== */
+function getDirectoryMap(){
+  const map={};
+  directoryHot.getData().forEach(r=>{
+    const name=(r[0]||"").trim().toLowerCase();
+    const email=(r[1]||"").trim();
+    if(name&&email) map[name]=email;
+  });
+  return map;
+}
+
+/* ===== Firebase Save/Load (months and directory) ===== */
 async function saveMonthToFirebase(y,m){
-  const key = monthKey(y,m);
-  const state = monthStore[key];
-  if(!state) return;
+  const key=monthKey(y,m); const state=monthStore[key]; if(!state) return;
   try{
     const payload = {
       data: JSON.stringify(state.data || []),
       bodyRows: JSON.stringify(state.bodyRows || []),
       meta: JSON.stringify(state.meta || {})
     };
-    console.log("[SAVE payload]", payload);
     await setDoc(doc(db,"months",key), payload);
-    console.log("[SAVE] Wrote", key);
   }catch(e){ console.error("Save error", e); }
 }
 async function loadMonthFromFirebase(y,m){
-  const key = monthKey(y,m);
+  const key=monthKey(y,m);
   try{
     const snap = await getDoc(doc(db,"months",key));
     if(snap.exists()){
       const raw = snap.data();
-      console.log("[LOAD raw]", raw);
       monthStore[key] = {
         data: JSON.parse(raw.data || "[]"),
         bodyRows: JSON.parse(raw.bodyRows || "[]"),
@@ -383,20 +553,12 @@ async function loadMonthFromFirebase(y,m){
         shiftLog:[], summary:[], summaryStudy:[], summarySite:[],
         loaded:true
       };
-      console.log("[LOAD parsed]", monthStore[key]);
-    } else {
-      console.log("[LOAD] no doc for", key);
     }
   }catch(e){ console.error("Load error", e); }
 }
 
-/* ---------------- Init ---------------- */
-window.prevMonth = prevMonth;
-window.nextMonth = nextMonth;
-window.showPage  = showPage;
-window.addRows   = addRows;
-window.delRows   = delRows;
-window.applyColor= applyColor;
+/* ===== Init ===== */
+await loadDirectoryFromFirebase();
 renderMonth();
 </script>
 
@@ -406,16 +568,48 @@ renderMonth();
   nav button { margin-right: 8px; }
   .page { display: none; }
   .page.active { display: block; }
+
   .palette { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
   .swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
   .swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
   .handsontable th { background:#eee !important; }
   td.day-sep { border-right: 1px solid #aaa !important; }
+
   table.out { border-collapse: collapse; width:100%; margin-top:10px; }
   table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
   table.out th { background:#eee; }
+
+  /* Scheduler layout with sidebar */
+  .scheduler-wrap { display:flex; gap:16px; align-items:flex-start; }
+  #grid { flex: 1 1 auto; min-width: 0; }
+  #availabilitySidebar {
+    width: 260px; border:1px solid #ddd; border-radius:8px; padding:10px;
+    background:#fafafa; flex: 0 0 auto; max-height: 80vh; overflow:auto;
+  }
+  .aside-title { font-weight:700; margin-bottom:8px; }
+  .emp-row { margin:4px 0; font-size: 13px; }
+  .emp-name { font-weight:600; }
+
+  /* Availability modal */
+  #availabilityModal {
+    position: fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background: rgba(0,0,0,0.35); z-index: 9999;
+  }
+  #availabilityModal.open { display:flex; }
+  .modal-card {
+    background:#fff; border-radius:10px; padding:16px; width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  }
+  .modal-header { font-weight:700; margin-bottom:10px; }
+  .modal-row { margin:8px 0; }
+  .days-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .daychip {
+    border:1px solid #bbb; border-radius:6px; padding:6px 10px; background:#fff; cursor:pointer; font-size:13px;
+  }
+  .daychip.selected { background:#304ffe; color:#fff; border-color:#304ffe; }
+  .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
 </style>
 </head>
+
 <body>
   <h1>Scheduler App</h1>
   <nav>
@@ -438,13 +632,41 @@ renderMonth();
       <button onclick="addRows()">+ Add</button>
       <button onclick="delRows()">– Delete</button>
     </div>
-    <div id="grid"></div>
+
+    <div class="scheduler-wrap">
+      <div id="grid"></div>
+      <aside id="availabilitySidebar">
+        <div class="aside-title">Availability</div>
+        <div class="aside-body">—</div>
+      </aside>
+    </div>
   </div>
 
   <!-- Directory Page -->
   <div id="directoryPage" class="page">
     <h2>Email Directory</h2>
     <div id="directory"></div>
+    <p style="margin-top:8px; font-size:12px; color:#555;">Tip: click “Set ▶” to add unavailable days.</p>
+  </div>
+
+  <!-- Availability Modal -->
+  <div id="availabilityModal">
+    <div class="modal-card">
+      <div class="modal-header" id="availabilityModalTitle">Set Unavailable Days</div>
+      <div class="modal-row">
+        <label><b>Month</b>:
+          <input type="month" id="availabilityMonth">
+        </label>
+      </div>
+      <div class="modal-row">
+        <b>Select days NOT available:</b>
+        <div class="days-grid" id="daysGrid"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="cancelAvailabilityBtn">Cancel</button>
+        <button id="saveAvailabilityBtn">Save</button>
+      </div>
+    </div>
   </div>
 
   <!-- Reports Page -->
