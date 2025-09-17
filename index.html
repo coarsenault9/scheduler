@@ -7,7 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/handsontable@14.3.0/dist/handsontable.full.min.js"></script>
 
 <script type="module">
-/* ===== Firebase ===== */
+/* ===== Firebase (modular SDK) ===== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
@@ -24,13 +24,11 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 
 /* ===== Shared State ===== */
-let monthStore={}, current=new Date(), hot, directoryHot;
-let lastSel=null, clipboardMeta=null;
-const COLS_PER_DAY=2,DAYS_PER_WEEK=7,TOTAL_COLS=DAYS_PER_WEEK*COLS_PER_DAY;
-let bodyRows=[];
-let currentAvailName=null;
+let monthStore = {}, current = new Date(), hot, directoryHot;
+let lastSel = null, clipboardMeta = null;
+const COLS_PER_DAY = 2, DAYS_PER_WEEK = 7, TOTAL_COLS = DAYS_PER_WEEK * COLS_PER_DAY;
+let bodyRows = [];
 
-/* ===== Helpers ===== */
 function monthKey(y,m){ return `${y}-${String(m+1).padStart(2,'0')}`; }
 function pad2(n){return String(n).padStart(2,'0');}
 function daysInMonth(y,m){return new Date(y, m+1, 0).getDate();}
@@ -43,29 +41,31 @@ function showPage(id){
   if(id==='reportsPage') refreshMonthSelect();
   if(id==='schedulerPage') refreshAvailabilitySidebar(current.getFullYear(), current.getMonth());
 }
-window.showPage=showPage;
+window.showPage = showPage;
 
 /* ===== Calendar Helpers ===== */
 function startOfCalendar(year, monthIdx){
-  const first=new Date(year,monthIdx,1);
-  const dow=(first.getDay()+6)%7;
-  const d=new Date(first); d.setDate(first.getDate()-dow);
+  const first = new Date(year,monthIdx,1);
+  const dow = (first.getDay()+6)%7; // Mon=0
+  const d = new Date(first);
+  d.setDate(first.getDate()-dow);
   return d;
 }
 function numWeeks(year, monthIdx){
-  const start=startOfCalendar(year,monthIdx);
-  const end=new Date(year,monthIdx+1,0);
-  const diff=Math.ceil((end-start)/86400000)+1;
+  const start = startOfCalendar(year,monthIdx);
+  const end = new Date(year,monthIdx+1,0);
+  const diff = Math.ceil((end-start)/86400000)+1;
   return Math.ceil(diff/7);
 }
 function buildWeekMatrix(year, monthIdx, weeks){
-  const start=startOfCalendar(year,monthIdx);
+  const start = startOfCalendar(year,monthIdx);
   const matrix=[];
   for(let w=0;w<weeks;w++){
     const row=[];
     for(let d=0;d<DAYS_PER_WEEK;d++){
-      const cell=new Date(start); cell.setDate(start.getDate()+w*7+d);
-      row.push({date:new Date(cell), inMonth:cell.getMonth()===monthIdx});
+      const cell=new Date(start);
+      cell.setDate(start.getDate()+w*7+d);
+      row.push({ date:new Date(cell), inMonth:cell.getMonth()===monthIdx });
     }
     matrix.push(row);
   }
@@ -77,21 +77,25 @@ function buildDataFor(y,m,weeks,br){
 }
 
 /* ===== Renderer ===== */
-function colorRenderer(instance,td,row,col){
-  Handsontable.renderers.TextRenderer.apply(this,arguments);
-  const key=monthKey(current.getFullYear(),current.getMonth());
-  const color=monthStore[key]?.meta?.[`${row}:${col}`];
-  if(color) td.style.background=color;
+function colorRenderer(instance, td, row, col){
+  Handsontable.renderers.TextRenderer.apply(this, arguments);
+  const key = monthKey(current.getFullYear(), current.getMonth());
+  const color = monthStore[key]?.meta?.[`${row}:${col}`];
+  if(color) td.style.background = color;
 
-  const state=monthStore[key];
-  if(state&&state.calendar){
-    const weekIdx=weekIndexForRow(row);
-    const dayIdx=Math.floor(col/2);
+  const state = monthStore[key];
+  if (state && state.calendar){
+    const weekIdx = weekIndexForRow(row);
+    const dayIdx = Math.floor(col/2);
     if(weekIdx>=0 && state.calendar[weekIdx] && !state.calendar[weekIdx][dayIdx].inMonth){
-      td.style.background="#f0f0f0"; td.style.color="#999";
+      td.style.background = "#f0f0f0";
+      td.style.color = "#999";
     }
   }
-  if(weekStarts().includes(row)){ td.style.background="#e0e0e0"; td.style.fontWeight="600"; }
+  if(weekStarts().includes(row)){
+    td.style.background = "#e0e0e0";
+    td.style.fontWeight = "600";
+  }
   if(col%2===1) td.classList.add('day-sep');
 }
 
@@ -100,17 +104,31 @@ function weekStarts(){let starts=[],acc=0;for(let i=0;i<bodyRows.length;i++){sta
 function weekIndexForRow(rowIdx){const starts=weekStarts();for(let i=0;i<bodyRows.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+bodyRows[i])return i;}return -1;}
 
 async function renderMonth(){
-  const y=current.getFullYear(),m=current.getMonth(),key=monthKey(y,m);
+  const y=current.getFullYear(), m=current.getMonth(), key=monthKey(y,m);
   const weeks=numWeeks(y,m);
-  if(!monthStore[key]) await loadMonthFromFirebase(y,m);
-  if(!monthStore[key]||!monthStore[key].data){
-    const br=Array(weeks).fill(8), data=buildDataFor(y,m,weeks,br), matrix=buildWeekMatrix(y,m,weeks), dayMeta={};
+
+  if(!monthStore[key]){ await loadMonthFromFirebase(y,m); }
+
+  if(!monthStore[key] || !monthStore[key].data){
+    const br=Array(weeks).fill(8);
+    const data=buildDataFor(y,m,weeks,br);
+    const matrix=buildWeekMatrix(y,m,weeks);
+    const dayMeta={};
     let acc=0;
-    for(let w=0;w<weeks;w++){for(let d=0;d<DAYS_PER_WEEK;d++){const c=d*COLS_PER_DAY;data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();dayMeta[`${acc}:${c}`]=matrix[w][d];}acc+=1+br[w];}
+    for(let w=0;w<weeks;w++){
+      for(let d=0;d<DAYS_PER_WEEK;d++){
+        const c=d*COLS_PER_DAY;
+        data[acc][c]=matrix[w][d].date.toLocaleString('default',{weekday:'short'})+" "+matrix[w][d].date.getDate();
+        dayMeta[`${acc}:${c}`]=matrix[w][d];
+      }
+      acc+=1+br[w];
+    }
     monthStore[key]={data,bodyRows:br,meta:{},dayMeta,calendar:matrix,shiftLog:[],summary:[],summaryStudy:[],summarySite:[],loaded:true};
   }
-  bodyRows=monthStore[key].bodyRows.slice();
-  document.getElementById("monthLabel").textContent=current.toLocaleString('default',{month:'long'})+" "+y;
+
+  bodyRows = monthStore[key].bodyRows.slice();
+  document.getElementById("monthLabel").textContent = current.toLocaleString('default',{month:'long'})+" "+y;
+
   if(hot) hot.destroy();
   hot=new Handsontable(document.getElementById('grid'),{
     data:monthStore[key].data,
@@ -118,144 +136,554 @@ async function renderMonth(){
     columns:Array.from({length:TOTAL_COLS},()=>({type:'text'})),
     licenseKey:'non-commercial-and-evaluation',
     contextMenu:true,
-    cells:(r,c)=>{let props={renderer:colorRenderer};if(weekStarts().includes(r)) props.readOnly=true;return props;},
+    cells:(r,c)=>{let props={renderer:colorRenderer}; if(weekStarts().includes(r)) props.readOnly=true; return props;},
     afterSelectionEnd:(r1,c1,r2,c2)=>{lastSel=[r1,c1,r2,c2];},
-    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){const key=monthKey(current.getFullYear(),current.getMonth());const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;clipboardMeta.push({r:r-startRow,c:c-startCol,color});}});},
-    afterPaste:(data,coords)=>{if(!clipboardMeta)return;const {startRow,startCol}=coords[0];const key=monthKey(current.getFullYear(),current.getMonth());clipboardMeta.forEach(item=>{if(item.color){const rr=startRow+item.r,cc=startCol+item.c;monthStore[key].meta[`${rr}:${cc}`]=item.color;}});hot.render();},
-    afterChange:()=>{saveMonthToFirebase(y,m);}
+    afterCopy:(data,coords)=>{clipboardMeta=[];coords.forEach(({startRow,startCol,endRow,endCol})=>{
+      for(let r=startRow;r<=endRow;r++)for(let c=startCol;c<=endCol;c++){
+        const key=monthKey(current.getFullYear(),current.getMonth());
+        const color=monthStore[key]?.meta?.[`${r}:${c}`]||null;
+        clipboardMeta.push({r:r-startRow,c:c-startCol,color});
+      }});},
+    afterPaste:(data,coords)=>{ if(!clipboardMeta) return;
+      const {startRow,startCol}=coords[0]; const key=monthKey(current.getFullYear(),current.getMonth());
+      clipboardMeta.forEach(item=>{
+        if(item.color){
+          const rr=startRow+item.r, cc=startCol+item.c;
+          monthStore[key].meta[`${rr}:${cc}`]=item.color;
+        }
+      });
+      hot.render(); saveMonthToFirebase(y,m);
+    },
+    afterChange:()=>{ saveMonthToFirebase(y,m); }
   });
+
+  // refresh the availability sidebar for this (y,m)
   refreshAvailabilitySidebar(y,m);
 }
-function prevMonth(){current.setMonth(current.getMonth()-1);renderMonth();}
-function nextMonth(){current.setMonth(current.getMonth()+1);renderMonth();}
-window.prevMonth=prevMonth;window.nextMonth=nextMonth;
+function prevMonth(){ current.setMonth(current.getMonth()-1); renderMonth(); }
+function nextMonth(){ current.setMonth(current.getMonth()+1); renderMonth(); }
+window.prevMonth = prevMonth;
+window.nextMonth = nextMonth;
 
 /* ===== Colors ===== */
 const colors=["#f28b82","#fbbc04","#fff475","#ccff90","#a7ffeb","#cbf0f8","#aecbfa","#d7aefb","#fdcfe8","#e6c9a8","#e8eaed","#d50000","#c51162","#aa00ff","#304ffe","#2962ff","#0091ea","#00b8d4","#00c853","#64dd17"];
-(function(){const p=document.getElementById('palette');colors.forEach(c=>{let sw=document.createElement('div');sw.className='swatch';sw.style.background=c;sw.onclick=()=>applyColor(c);p.appendChild(sw);});let clr=document.createElement('div');clr.className='swatch clear';clr.textContent='×';clr.onclick=()=>applyColor(null);p.appendChild(clr);})();
-function applyColor(color){const sel=lastSel||hot.getSelectedLast();if(!sel)return;const [r1,c1,r2,c2]=sel;const key=monthKey(current.getFullYear(),current.getMonth());if(!monthStore[key].meta)monthStore[key].meta={};for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){if(weekStarts().includes(r))continue;for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){if(color)monthStore[key].meta[`${r}:${c}`]=color;else delete monthStore[key].meta[`${r}:${c}`];}}hot.render();saveMonthToFirebase(current.getFullYear(),current.getMonth());}
-window.applyColor=applyColor;
+(function(){
+  const p=document.getElementById('palette');
+  colors.forEach(c=>{
+    let sw=document.createElement('div');
+    sw.className='swatch';
+    sw.style.background=c;
+    sw.onclick=()=>applyColor(c);
+    p.appendChild(sw);
+  });
+  let clr=document.createElement('div');
+  clr.className='swatch clear';
+  clr.textContent='×';
+  clr.onclick=()=>applyColor(null);
+  p.appendChild(clr);
+})();
+function applyColor(color){
+  const sel=lastSel||hot.getSelectedLast(); if(!sel) return;
+  const [r1,c1,r2,c2]=sel;
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  if(!monthStore[key].meta) monthStore[key].meta={};
+  for(let r=Math.min(r1,r2);r<=Math.max(r1,r2);r++){
+    if(weekStarts().includes(r)) continue;
+    for(let c=Math.min(c1,c2);c<=Math.max(c1,c2);c++){
+      if(color) monthStore[key].meta[`${r}:${c}`]=color;
+      else delete monthStore[key].meta[`${r}:${c}`];
+    }
+  }
+  hot.render();
+  saveMonthToFirebase(current.getFullYear(),current.getMonth());
+}
+window.applyColor = applyColor;
 
 /* ===== Add/Delete Rows ===== */
-function shiftMeta(meta,startRow,delta){const newMeta={};Object.entries(meta).forEach(([k,v])=>{let [r,c]=k.split(":").map(Number);if(r>=startRow)r+=delta;newMeta[`${r}:${c}`]=v;});return newMeta;}
-function addRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);const sel=lastSel||hot.getSelectedLast();if(!sel)return;const w=weekIndexForRow(sel[0]);if(w<0)return;const key=monthKey(current.getFullYear(),current.getMonth());const start=weekStarts()[w]+1;bodyRows[w]+=n;monthStore[key].bodyRows=bodyRows.slice();monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);renderMonth();saveMonthToFirebase(current.getFullYear(),current.getMonth());}
-function delRows(){const n=parseInt(document.getElementById('rowsToModify').value||'1',10);const sel=lastSel||hot.getSelectedLast();if(!sel)return;const w=weekIndexForRow(sel[0]);if(w<0)return;if(bodyRows[w]<=n)return;const key=monthKey(current.getFullYear(),current.getMonth());const start=weekStarts()[w]+1;bodyRows[w]-=n;monthStore[key].bodyRows=bodyRows.slice();monthStore[key].data.splice(start,n);monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);renderMonth();saveMonthToFirebase(current.getFullYear(),current.getMonth());}
-window.addRows=addRows;window.delRows=delRows;
+function shiftMeta(meta, startRow, delta){
+  const newMeta={};
+  Object.entries(meta).forEach(([k,v])=>{
+    let [r,c]=k.split(":").map(Number);
+    if(r>=startRow) r+=delta;
+    newMeta[`${r}:${c}`]=v;
+  });
+  return newMeta;
+}
+function addRows(){
+  const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
+  const sel=lastSel||hot.getSelectedLast(); if(!sel) return;
+  const w=weekIndexForRow(sel[0]); if(w<0) return;
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  const start=weekStarts()[w]+1;
+  bodyRows[w]+=n; monthStore[key].bodyRows=bodyRows.slice();
+  monthStore[key].data.splice(start,0,...Array.from({length:n},()=>Array(TOTAL_COLS).fill("")));
+  monthStore[key].meta=shiftMeta(monthStore[key].meta,start,n);
+  renderMonth(); saveMonthToFirebase(current.getFullYear(),current.getMonth());
+}
+function delRows(){
+  const n=parseInt(document.getElementById('rowsToModify').value||'1',10);
+  const sel=lastSel||hot.getSelectedLast(); if(!sel) return;
+  const w=weekIndexForRow(sel[0]); if(w<0) return;
+  if(bodyRows[w]<=n) return;
+  const key=monthKey(current.getFullYear(),current.getMonth());
+  const start=weekStarts()[w]+1;
+  bodyRows[w]-=n; monthStore[key].bodyRows=bodyRows.slice();
+  monthStore[key].data.splice(start,n);
+  monthStore[key].meta=shiftMeta(monthStore[key].meta,start,-n);
+  renderMonth(); saveMonthToFirebase(current.getFullYear(),current.getMonth());
+}
+window.addRows = addRows;
+window.delRows = delRows;
 
-/* ===== Directory ===== */
-const directoryContainer=document.getElementById('directory');
-directoryHot=new Handsontable(directoryContainer,{data:[["","","","Set ▶"]],colHeaders:["Name","Email","Phone","Availability"],columns:[{type:'text'},{type:'text'},{type:'text'},{renderer:availabilityButtonRenderer,readOnly:true}],rowHeaders:true,minSpareRows:1,contextMenu:true,licenseKey:'non-commercial-and-evaluation',afterChange:(c,s)=>{if(s==='loadData'||!c)return;saveDirectoryToFirebase();},afterCreateRow:()=>saveDirectoryToFirebase(),afterRemoveRow:()=>saveDirectoryToFirebase()});
-function availabilityButtonRenderer(instance,td,row,col){td.innerHTML="";const btn=document.createElement('button');btn.textContent="Set ▶";btn.style.padding="2px 6px";btn.style.fontSize="12px";btn.onclick=(e)=>{e.stopPropagation();const name=(directoryHot.getDataAtCell(row,0)||"").trim();if(!name){alert("Please enter a Name first.");return;}openAvailabilityModal(name);};td.appendChild(btn);}
-async function saveDirectoryToFirebase(){try{const data=directoryHot.getData();const payload={data:JSON.stringify(data)};await setDoc(doc(db,"directory","main"),payload);}catch(e){console.error("Directory save error",e);}}
-async function loadDirectoryFromFirebase(){try{const snap=await getDoc(doc(db,"directory","main"));if(snap.exists()){const raw=snap.data();const arr=JSON.parse(raw.data||"[]");if(Array.isArray(arr)&&arr.length){directoryHot.loadData(arr);}}}catch(e){console.error("Directory load error",e);}}
+/* ===== Directory (persisted) ===== */
+const directoryContainer = document.getElementById('directory');
+directoryHot = new Handsontable(directoryContainer,{
+  data:[["","","","Set ▶"]], // Name, Email, Phone, Availability button label
+  colHeaders:["Name","Email","Phone","Availability"],
+  columns:[
+    {type:'text'}, {type:'text'}, {type:'text'},
+    {renderer: availabilityButtonRenderer, readOnly:true}
+  ],
+  rowHeaders:true, minSpareRows:1,
+  contextMenu:true, licenseKey:'non-commercial-and-evaluation',
+  afterChange: (changes, source)=>{
+    if(source === 'loadData' || !changes) return;
+    saveDirectoryToFirebase();
+  },
+  afterCreateRow: ()=>saveDirectoryToFirebase(),
+  afterRemoveRow: ()=>saveDirectoryToFirebase(),
+});
 
-/* ===== Availability ===== */
-function openAvailabilityModal(name){currentAvailName=name;document.getElementById('availabilityModalTitle').textContent=`Set Unavailable Days: ${name}`;document.getElementById('availabilityMonth').value=`${current.getFullYear()}-${pad2(current.getMonth()+1)}`;buildDaysGrid(current.getFullYear(), current.getMonth());loadAvailability(name,current.getFullYear(),current.getMonth());document.getElementById('availabilityModal').classList.add('open');}
-function buildDaysGrid(y,m){const days=daysInMonth(y,m);const grid=document.getElementById('daysGrid');grid.innerHTML="";for(let d=1;d<=days;d++){const chip=document.createElement('div');chip.textContent=d;chip.className='daychip';chip.onclick=()=>chip.classList.toggle('selected');grid.appendChild(chip);}}
-async function loadAvailability(name,y,m){const empId=empIdFromName(name);const ym=`${y}-${pad2(m+1)}`;try{const snap=await getDoc(doc(db,"availability",empId,"months",ym));if(snap.exists()){const data=snap.data();const days=data.days||[];const chips=document.querySelectorAll('#daysGrid .daychip');chips.forEach(chip=>{if(days.includes(parseInt(chip.textContent))) chip.classList.add('selected');});}}catch(e){console.error("Load avail error",e);}}
-async function saveAvailability(){const ym=document.getElementById('availabilityMonth').value;const [y,m]=ym.split('-').map(Number);const chips=document.querySelectorAll('#daysGrid .daychip.selected');const days=[...chips].map(c=>parseInt(c.textContent));const empId=empIdFromName(currentAvailName);try{await setDoc(doc(db,"availability",empId,"months",ym),{days,updatedAt:serverTimestamp()});}catch(e){console.error("Save avail error",e);}document.getElementById('availabilityModal').classList.remove('open');refreshAvailabilitySidebar(y,m-1);}
-document.getElementById('saveAvailabilityBtn').onclick=saveAvailability;
-document.getElementById('cancelAvailabilityBtn').onclick=()=>document.getElementById('availabilityModal').classList.remove('open');
-async function refreshAvailabilitySidebar(y,m){const ym=`${y}-${pad2(m+1)}`;const sb=document.getElementById('availabilitySidebar');sb.innerHTML="<div class='aside-title'>Employee Unavailability</div>";const data=directoryHot.getData();for(let r of data){const name=(r[0]||"").trim();if(!name) continue;const empId=empIdFromName(name);try{const snap=await getDoc(doc(db,"availability",empId,"months",ym));if(snap.exists()){const days=snap.data().days||[];if(days.length){const div=document.createElement('div');div.className='emp-row';div.innerHTML=`<span class='emp-name'>${name}:</span> ${days.join(', ')}`;sb.appendChild(div);}}}catch(e){console.error("Sidebar avail error",e);}}}
+function availabilityButtonRenderer(instance, td, row, col, prop, value){
+  // Create a clickable button within the cell
+  td.innerHTML = "";
+  const btn = document.createElement('button');
+  btn.textContent = "Set ▶";
+  btn.style.padding = "2px 6px";
+  btn.style.fontSize = "12px";
+  btn.onclick = (e)=>{
+    e.stopPropagation();
+    const name = (directoryHot.getDataAtCell(row,0)||"").trim();
+    if(!name){ alert("Please enter a Name first."); return; }
+    openAvailabilityModal(name);
+  };
+  td.appendChild(btn);
+}
+
+async function saveDirectoryToFirebase(){
+  try{
+    const data = directoryHot.getData(); // 2D array (has an extra spare row)
+    const payload = { data: JSON.stringify(data) }; // stringify to avoid nested arrays
+    await setDoc(doc(db,"directory","main"), payload);
+  }catch(e){ console.error("Directory save error", e); }
+}
+
+async function loadDirectoryFromFirebase(){
+  try{
+    const snap = await getDoc(doc(db,"directory","main"));
+    if(snap.exists()){
+      const raw = snap.data();
+      const arr = JSON.parse(raw.data || "[]");
+      if(Array.isArray(arr) && arr.length){
+        directoryHot.loadData(arr);
+      }
+    }
+  }catch(e){ console.error("Directory load error", e); }
+}
+
+/* ===== Availability modal & save/load ===== */
+const modal = document.getElementById('availabilityModal');
+const modalTitle = document.getElementById('availabilityModalTitle');
+const monthInput = document.getElementById('availabilityMonth');
+const daysGrid = document.getElementById('daysGrid');
+const saveAvailBtn = document.getElementById('saveAvailabilityBtn');
+const cancelAvailBtn = document.getElementById('cancelAvailabilityBtn');
+
+let currentAvailEmployee = null;
+let selectedDays = new Set();
+
+function openAvailabilityModal(employeeName){
+  currentAvailEmployee = employeeName;
+  modalTitle.textContent = `Set Unavailable Days — ${employeeName}`;
+  // default to current month in input[type=month]
+  const y = current.getFullYear();
+  const m = current.getMonth()+1;
+  monthInput.value = `${y}-${pad2(m)}`;
+  // build grid for that month
+  buildDaysGridFromInput();
+  // preload existing availability for that month
+  preloadAvailability(employeeName, y, m-1).then(()=>{});
+  modal.classList.add('open');
+}
+window.openAvailabilityModal = openAvailabilityModal;
+
+function closeAvailabilityModal(){
+  modal.classList.remove('open');
+  currentAvailEmployee = null;
+  selectedDays.clear();
+}
+cancelAvailBtn.addEventListener('click', closeAvailabilityModal);
+
+monthInput.addEventListener('change', buildDaysGridFromInput);
+
+function buildDaysGridFromInput(){
+  daysGrid.innerHTML = "";
+  selectedDays.clear();
+  const [yy,mm] = monthInput.value.split('-').map(Number);
+  if(!yy || !mm) return;
+  const dcount = daysInMonth(yy,mm-1);
+  for(let d=1; d<=dcount; d++){
+    const btn = document.createElement('button');
+    btn.textContent = d;
+    btn.className = "daychip";
+    btn.onclick = ()=>{
+      if(selectedDays.has(d)){ selectedDays.delete(d); btn.classList.remove('selected'); }
+      else { selectedDays.add(d); btn.classList.add('selected'); }
+    };
+    daysGrid.appendChild(btn);
+  }
+}
+
+async function preloadAvailability(employeeName, y, m){
+  const empId = empIdFromName(employeeName);
+  const ym = `${y}-${pad2(m+1)}`;
+  try{
+    const snap = await getDoc(doc(db,"availability", empId, "months", ym));
+    if(snap.exists()){
+      const data = snap.data();
+      const days = Array.isArray(data.days) ? data.days : [];
+      selectedDays = new Set(days);
+      // mark selected in grid
+      Array.from(daysGrid.children).forEach(btn=>{
+        const d = Number(btn.textContent);
+        if(selectedDays.has(d)) btn.classList.add('selected');
+      });
+    }
+  }catch(e){ console.error("Availability preload error", e); }
+}
+
+saveAvailBtn.addEventListener('click', async ()=>{
+  if(!currentAvailEmployee){ closeAvailabilityModal(); return; }
+  const [yy,mm] = monthInput.value.split('-').map(Number);
+  if(!yy || !mm){ alert("Please choose a month."); return; }
+  const empId = empIdFromName(currentAvailEmployee);
+  const ym = `${yy}-${pad2(mm)}`;
+  try{
+    await setDoc(doc(db,"availability", empId, "months", ym), {
+      days: Array.from(selectedDays).sort((a,b)=>a-b),
+      updatedAt: serverTimestamp()
+    });
+    closeAvailabilityModal();
+    // if sidebar is showing this month, refresh it
+    const cy = current.getFullYear(), cm = current.getMonth();
+    if(yy===cy && mm-1===cm) refreshAvailabilitySidebar(cy,cm);
+  }catch(e){ console.error("Availability save error", e); }
+});
+
+/* ===== Availability sidebar (per month) ===== */
+async function refreshAvailabilitySidebar(y,m){
+  const sidebar = document.getElementById('availabilitySidebar');
+  sidebar.innerHTML = `<div class="aside-title">Availability (${y}-${pad2(m+1)})</div><div class="aside-body">Loading…</div>`;
+  const body = sidebar.querySelector('.aside-body');
+
+  // build list of employees from the directory (non-empty names)
+  const rows = directoryHot.getData();
+  const employees = [];
+  rows.forEach(row=>{
+    const name = (row?.[0]||"").trim();
+    if(name) employees.push(name);
+  });
+
+  if(!employees.length){
+    body.textContent = "No employees in the directory.";
+    return;
+  }
+
+  // fetch availability for each employee for this y-m
+  const ym = `${y}-${pad2(m+1)}`;
+  const fragments = [];
+  for(const name of employees){
+    const empId = empIdFromName(name);
+    try{
+      const snap = await getDoc(doc(db,"availability", empId, "months", ym));
+      let days = [];
+      if(snap.exists()){
+        const data = snap.data();
+        days = Array.isArray(data.days) ? data.days : [];
+      }
+      const label = days.length ? days.join(", ") : "—";
+      fragments.push(`<div class="emp-row"><span class="emp-name">${name}:</span> <span class="emp-days">${label}</span></div>`);
+    }catch(e){
+      console.error("Availability load error", e);
+      fragments.push(`<div class="emp-row"><span class="emp-name">${name}:</span> <span class="emp-days">[error]</span></div>`);
+    }
+  }
+  body.innerHTML = fragments.join("");
+}
 
 /* ===== Reports ===== */
-function parseSchedule(y,m){
-  const key=monthKey(y,m);const state=monthStore[key];if(!state) return;
+function parseSchedule(y, m){
+  const key=monthKey(y,m); const state=monthStore[key];
+  if(!state) return;
   const data=state.data, br=state.bodyRows, calendar=state.calendar;
-  function startsFrom(brArr){const out=[];let acc=0;for(let i=0;i<brArr.length;i++){out.push(acc);acc+=1+brArr[i];}return out;}
+  function startsFrom(a){const out=[];let acc=0;for(let i=0;i<a.length;i++){out.push(acc);acc+=1+a[i];}return out;}
   const starts=startsFrom(br);
   function weekIndexForRowLocal(rowIdx){for(let i=0;i<br.length;i++){if(rowIdx>=starts[i]&&rowIdx<=starts[i]+br[i])return i;}return -1;}
   function formatDate(d){return d.toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});}
+
   const shiftLog=[], summaryShifts={}, studyVisits={}, siteVisits={}, emailMap=getDirectoryMap();
-  for(let c=0;c<TOTAL_COLS;c+=2){let r=0;const maxRow=data.length;while(r<maxRow){const study=(data[r][c]||"").trim();const visit=(data[r][c+1]||"").trim();const forbidden=["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];if(forbidden.includes(study.toUpperCase())){r++;continue;}if(study&&visit){const wk=weekIndexForRowLocal(r);const dayIdx=Math.floor(c/2);let dateStr=`${y}-${m+1}`, dateObj=null;if(wk>=0&&calendar&&calendar[wk]&&calendar[wk][dayIdx]){dateObj=calendar[wk][dayIdx].date;dateStr=formatDate(dateObj);}let rr=r+1, pi="", site="", roles=[];while(rr<maxRow){const left=(data[rr][c]||"").trim();const right=(data[rr][c+1]||"").trim();const leftU=left.toUpperCase();if(!left&&!right){rr++;continue;}if(leftU==="INV"){pi=right;rr++;continue;}if(left==="Site"){site=right;rr++;break;}if(right&&!["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)){roles.push({role:left,emp:right});}rr++;}roles.forEach(({role,emp})=>{const email=emailMap[emp.toLowerCase()]||"";shiftLog.push([dateStr,study,visit,role,emp,email,site,pi]);summaryShifts[emp]=(summaryShifts[emp]||0)+1;});if(dateObj){const dKey=formatDate(dateObj);if(!studyVisits[study]) studyVisits[study]={};if(!studyVisits[study][dKey]) studyVisits[study][dKey]=new Set();if(site) studyVisits[study][dKey].add(site);if(site){if(!siteVisits[site]) siteVisits[site]=new Set();siteVisits[site].add(dKey);}}r=rr;continue;}r++;}}state.shiftLog=shiftLog;const ym=`${y}-${pad2(m+1)}`;const employees=Object.keys(summaryShifts);const employeeSummary=[];const promises=employees.map(async emp=>{const empId=empIdFromName(emp);let unavailable=[];try{const snap=await getDoc(doc(db,"availability",empId,"months",ym));if(snap.exists()){const data=snap.data();unavailable=Array.isArray(data.days)?data.days:[];}}catch(e){console.error("Utilization fetch error",e);}const scheduledDays=summaryShifts[emp];const totalDays=daysInMonth(y,m);const availableDays=Math.max(totalDays-unavailable.length,0);const util=availableDays>0?((scheduledDays/availableDays)*100).toFixed(1)+"%":"0%";employeeSummary.push([emp,scheduledDays,util]);});state.summaryPromise=Promise.all(promises).then(()=>{state.summary=employeeSummary;});state.summaryStudy=Object.entries(studyVisits).map(([study,dates])=>{let total=0;Object.values(dates).forEach(set=>total+=set.size);return [study,total];});state.summarySite=Object.entries(siteVisits).map(([site,dates])=>[site,dates.size]);}
-function refreshMonthSelect(){const sel=document.getElementById('monthSelect');sel.innerHTML="";Object.keys(monthStore).sort().forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;sel.appendChild(o);});}
-async function renderReports(){const sel=document.getElementById('monthSelect').value;if(!sel)return;const [y,m]=sel.split('-').map(Number);parseSchedule(y,m-1);const s=monthStore[sel];if(s.summaryPromise){await s.summaryPromise;}renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],s.shiftLog);renderTable("summary",["Employee","Count","Utilization"],s.summary);renderTable("summaryStudy",["Study","Unique Visits"],s.summaryStudy);renderTable("summarySite",["Site","Unique Visits"],s.summarySite);}
-function renderTable(id,hdrs,rows){let html="<table class='out'><tr>"+hdrs.map(h=>`<th>${h}</th>`).join("")+"</tr>";rows.forEach(r=>{html+="<tr>"+r.map(v=>`<td>${v??""}</td>`).join("")+"</tr>";});html+="</table>";document.getElementById(id).innerHTML=html;}
 
-/* ===== Directory Map Helper ===== */
-function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
+  for(let c=0;c<TOTAL_COLS;c+=2){
+    let r=0; const maxRow=data.length;
+    while(r<maxRow){
+      const study=(data[r][c]||"").trim();
+      const visit=(data[r][c+1]||"").trim();
+      const forbidden=["TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"];
+      if(forbidden.includes(study.toUpperCase())){ r++; continue; }
 
-/* ===== Firebase Save/Load Schedule ===== */
-async function saveMonthToFirebase(y,m){const key=monthKey(y,m);const state=monthStore[key];try{await setDoc(doc(db,"months",key),{bodyRows:state.bodyRows,meta:JSON.stringify(state.meta),data:JSON.stringify(state.data),updatedAt:serverTimestamp()});}catch(e){console.error("Save error",e);}}
-async function loadMonthFromFirebase(y,m){const key=monthKey(y,m);try{const snap=await getDoc(doc(db,"months",key));if(snap.exists()){const raw=snap.data();monthStore[key]={bodyRows:raw.bodyRows||[],meta:raw.meta?JSON.parse(raw.meta):{},data:raw.data?JSON.parse(raw.data):[],calendar:buildWeekMatrix(y,m,numWeeks(y,m)),shiftLog:[],summary:[],summaryStudy:[],summarySite:[],loaded:true};}}catch(e){console.error("Load error",e);}}
+      if(study && visit){
+        const wk=weekIndexForRowLocal(r);
+        const dayIdx=Math.floor(c/2);
+        let dateStr=`${y}-${m+1}`, dateObj=null;
+        if(wk>=0 && calendar && calendar[wk] && calendar[wk][dayIdx]){
+          dateObj=calendar[wk][dayIdx].date; dateStr=formatDate(dateObj);
+        }
+        let rr=r+1, pi="", site="", roles=[];
+        while(rr<maxRow){
+          const left=(data[rr][c]||"").trim();
+          const right=(data[rr][c+1]||"").trim();
+          const leftU=left.toUpperCase();
+          if(!left && !right){ rr++; continue; }
+          if(leftU==="INV"){ pi=right; rr++; continue; }
+          if(left==="Site"){ site=right; rr++; break; }
+          if(right && !["INV","SITE","TRAVEL","TRAVEL AM","TRAVEL PM","STAY","DRIVE"].includes(leftU)){
+            roles.push({role:left,emp:right});
+          }
+          rr++;
+        }
+        roles.forEach(({role,emp})=>{
+          const email=emailMap[emp.toLowerCase()]||"";
+          shiftLog.push([dateStr,study,visit,role,emp,email,site,pi]);
+          summaryShifts[emp]=(summaryShifts[emp]||0)+1;
+        });
+
+        if(dateObj){
+          const dKey=formatDate(dateObj);
+          if(!studyVisits[study]) studyVisits[study]={};
+          if(!studyVisits[study][dKey]) studyVisits[study][dKey]=new Set();
+          if(site) studyVisits[study][dKey].add(site);
+          if(site){ if(!siteVisits[site]) siteVisits[site]=new Set(); siteVisits[site].add(dKey); }
+        }
+        r=rr; continue;
+      }
+      r++;
+    }
+  }
+
+  state.shiftLog = shiftLog;
+  state.summary = Object.entries(summaryShifts);
+  state.summaryStudy = Object.entries(studyVisits).map(([study, dates])=>{
+    let total=0; Object.values(dates).forEach(set=> total += set.size); return [study,total];
+  });
+  state.summarySite = Object.entries(siteVisits).map(([site, dates])=>[site, dates.size]);
+}
+function refreshMonthSelect(){
+  const sel=document.getElementById('monthSelect');
+  sel.innerHTML="";
+  Object.keys(monthStore).sort().forEach(k=>{
+    const o=document.createElement('option'); o.value=k; o.textContent=k; sel.appendChild(o);
+  });
+}
+function renderReports(){
+  const sel=document.getElementById('monthSelect').value; if(!sel) return;
+  const [y,m]=sel.split('-').map(Number);
+  parseSchedule(y, m-1);
+  const s=monthStore[sel];
+  renderTable("shiftLog",["Date","Study","Visit","Role","Employee","Email","Site","PI"],s.shiftLog);
+  renderTable("summary",["Employee","Count"],s.summary);
+  renderTable("summaryStudy",["Study","Unique Visits"],s.summaryStudy);
+  renderTable("summarySite",["Site","Unique Visits"],s.summarySite);
+}
+window.renderReports = renderReports;
+
+function renderTable(id,hdrs,rows){
+  let html = "<table class='out'><tr>" + hdrs.map(h=>`<th>${h}</th>`).join("") + "</tr>";
+  rows.forEach(r=>{
+    html += "<tr>" + r.map(v=>`<td>${v??""}</td>`).join("") + "</tr>";
+  });
+  html += "</table>";
+  document.getElementById(id).innerHTML = html;
+}
+
+/* ===== Directory helpers for Reports ===== */
+function getDirectoryMap(){
+  const map={};
+  directoryHot.getData().forEach(r=>{
+    const name=(r[0]||"").trim().toLowerCase();
+    const email=(r[1]||"").trim();
+    if(name&&email) map[name]=email;
+  });
+  return map;
+}
+
+/* ===== Firebase Save/Load (months and directory) ===== */
+async function saveMonthToFirebase(y,m){
+  const key=monthKey(y,m); const state=monthStore[key]; if(!state) return;
+  try{
+    const payload = {
+      data: JSON.stringify(state.data || []),
+      bodyRows: JSON.stringify(state.bodyRows || []),
+      meta: JSON.stringify(state.meta || {})
+    };
+    await setDoc(doc(db,"months",key), payload);
+  }catch(e){ console.error("Save error", e); }
+}
+async function loadMonthFromFirebase(y,m){
+  const key=monthKey(y,m);
+  try{
+    const snap = await getDoc(doc(db,"months",key));
+    if(snap.exists()){
+      const raw = snap.data();
+      monthStore[key] = {
+        data: JSON.parse(raw.data || "[]"),
+        bodyRows: JSON.parse(raw.bodyRows || "[]"),
+        meta: JSON.parse(raw.meta || "{}"),
+        calendar: buildWeekMatrix(y,m,numWeeks(y,m)),
+        dayMeta:{},
+        shiftLog:[], summary:[], summaryStudy:[], summarySite:[],
+        loaded:true
+      };
+    }
+  }catch(e){ console.error("Load error", e); }
+}
 
 /* ===== Init ===== */
-window.addEventListener('DOMContentLoaded',async()=>{await loadDirectoryFromFirebase();renderMonth();});
+await loadDirectoryFromFirebase();
+renderMonth();
 </script>
 
 <style>
-body { font-family: Arial, sans-serif; margin: 18px; }
-nav { margin-bottom: 12px; }
-nav button { margin-right: 8px; }
-.page { display: none; }
-.page.active { display: block; }
-.palette { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
-.swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
-.swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
-.handsontable th { background:#eee !important; }
-td.day-sep { border-right: 1px solid #aaa !important; }
-table.out { border-collapse: collapse; width:100%; margin-top:10px; }
-table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
-table.out th { background:#eee; }
-#availabilitySidebar { position:absolute; top:100px; right:20px; width:220px; background:#fafafa; border:1px solid #ccc; padding:10px; font-size:13px; }
-#availabilitySidebar .aside-title { font-weight:bold; margin-bottom:6px; }
-.emp-row { margin-bottom:4px; }
-.emp-name { font-weight:bold; }
-#availabilityModal{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:none;align-items:center;justify-content:center;}
-#availabilityModal.open{display:flex;}
-#availabilityModal .modal-content{background:#fff;padding:20px;border-radius:8px;width:400px;max-height:80%;overflow:auto;}
-.daychip{margin:2px;padding:4px 8px;cursor:pointer;}
-.daychip.selected{background:#f28b82;color:#fff;}
+  body { font-family: Arial, sans-serif; margin: 18px; }
+  nav { margin-bottom: 12px; }
+  nav button { margin-right: 8px; }
+  .page { display: none; }
+  .page.active { display: block; }
+
+  .palette { display:flex; gap:6px; flex-wrap:wrap; margin:8px 0; }
+  .swatch { width:22px; height:22px; border:1px solid #999; border-radius:4px; cursor:pointer; }
+  .swatch.clear { display:flex; align-items:center; justify-content:center; font-size:14px; }
+  .handsontable th { background:#eee !important; }
+  td.day-sep { border-right: 1px solid #aaa !important; }
+
+  table.out { border-collapse: collapse; width:100%; margin-top:10px; }
+  table.out th, table.out td { border:1px solid #ccc; padding:6px; font-size:12px; }
+  table.out th { background:#eee; }
+
+  /* Scheduler layout with sidebar */
+  .scheduler-wrap { display:flex; gap:16px; align-items:flex-start; }
+  #grid { flex: 1 1 auto; min-width: 0; }
+  #availabilitySidebar {
+    width: 260px; border:1px solid #ddd; border-radius:8px; padding:10px;
+    background:#fafafa; flex: 0 0 auto; max-height: 80vh; overflow:auto;
+  }
+  .aside-title { font-weight:700; margin-bottom:8px; }
+  .emp-row { margin:4px 0; font-size: 13px; }
+  .emp-name { font-weight:600; }
+
+  /* Availability modal */
+  #availabilityModal {
+    position: fixed; inset:0; display:none; align-items:center; justify-content:center;
+    background: rgba(0,0,0,0.35); z-index: 9999;
+  }
+  #availabilityModal.open { display:flex; }
+  .modal-card {
+    background:#fff; border-radius:10px; padding:16px; width: 420px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  }
+  .modal-header { font-weight:700; margin-bottom:10px; }
+  .modal-row { margin:8px 0; }
+  .days-grid { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .daychip {
+    border:1px solid #bbb; border-radius:6px; padding:6px 10px; background:#fff; cursor:pointer; font-size:13px;
+  }
+  .daychip.selected { background:#304ffe; color:#fff; border-color:#304ffe; }
+  .modal-actions { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
 </style>
 </head>
+
 <body>
-<h1>Scheduler App</h1>
-<nav>
-  <button onclick="showPage('schedulerPage')">Scheduler</button>
-  <button onclick="showPage('directoryPage')">Directory</button>
-  <button onclick="showPage('reportsPage')">Reports</button>
-</nav>
+  <h1>Scheduler App</h1>
+  <nav>
+    <button onclick="showPage('schedulerPage')">Scheduler</button>
+    <button onclick="showPage('directoryPage')">Directory</button>
+    <button onclick="showPage('reportsPage')">Reports</button>
+  </nav>
 
-<div id="schedulerPage" class="page active">
-  <h2>Monthly Scheduler</h2>
-  <div class="toolbar">
-    <button onclick="prevMonth()">◀ Prev</button>
-    <span id="monthLabel"></span>
-    <button onclick="nextMonth()">Next ▶</button>
-    <span style="margin-left:12px;"><b>Fill color:</b></span>
-    <div class="palette" id="palette"></div>
-    <span style="margin-left:12px;"><b>Rows:</b></span>
-    <input id="rowsToModify" type="number" min="1" value="1" style="width:60px;">
-    <button onclick="addRows()">+ Add</button>
-    <button onclick="delRows()">– Delete</button>
+  <!-- Scheduler Page -->
+  <div id="schedulerPage" class="page active">
+    <h2>Monthly Scheduler</h2>
+    <div class="toolbar">
+      <button onclick="prevMonth()">◀ Prev</button>
+      <span id="monthLabel"></span>
+      <button onclick="nextMonth()">Next ▶</button>
+      <span style="margin-left:12px;"><b>Fill color:</b></span>
+      <div class="palette" id="palette"></div>
+      <span style="margin-left:12px;"><b>Rows:</b></span>
+      <input id="rowsToModify" type="number" min="1" value="1" style="width:60px;">
+      <button onclick="addRows()">+ Add</button>
+      <button onclick="delRows()">– Delete</button>
+    </div>
+
+    <div class="scheduler-wrap">
+      <div id="grid"></div>
+      <aside id="availabilitySidebar">
+        <div class="aside-title">Availability</div>
+        <div class="aside-body">—</div>
+      </aside>
+    </div>
   </div>
-  <div id="grid"></div>
-  <div id="availabilitySidebar"></div>
-</div>
 
-<div id="directoryPage" class="page">
-  <h2>Email Directory</h2>
-  <div id="directory"></div>
-</div>
-
-<div id="reportsPage" class="page">
-  <h2>Reports</h2>
-  <label>Choose Month: <select id="monthSelect"></select></label>
-  <button onclick="renderReports()">Generate Report</button>
-  <h3>ShiftLog</h3><div id="shiftLog"></div>
-  <h3>Employee Summary</h3><div id="summary"></div>
-  <h3>Study Visits</h3><div id="summaryStudy"></div>
-  <h3>Site Visits</h3><div id="summarySite"></div>
-</div>
-
-<div id="availabilityModal">
-  <div class="modal-content">
-    <h3 id="availabilityModalTitle">Set Unavailable Days</h3>
-    <label>Month: <input type="month" id="availabilityMonth"></label>
-    <div id="daysGrid"></div>
-    <button id="saveAvailabilityBtn">Save</button>
-    <button id="cancelAvailabilityBtn">Cancel</button>
+  <!-- Directory Page -->
+  <div id="directoryPage" class="page">
+    <h2>Email Directory</h2>
+    <div id="directory"></div>
+    <p style="margin-top:8px; font-size:12px; color:#555;">Tip: click “Set ▶” to add unavailable days.</p>
   </div>
-</div>
+
+  <!-- Availability Modal -->
+  <div id="availabilityModal">
+    <div class="modal-card">
+      <div class="modal-header" id="availabilityModalTitle">Set Unavailable Days</div>
+      <div class="modal-row">
+        <label><b>Month</b>:
+          <input type="month" id="availabilityMonth">
+        </label>
+      </div>
+      <div class="modal-row">
+        <b>Select days NOT available:</b>
+        <div class="days-grid" id="daysGrid"></div>
+      </div>
+      <div class="modal-actions">
+        <button id="cancelAvailabilityBtn">Cancel</button>
+        <button id="saveAvailabilityBtn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reports Page -->
+  <div id="reportsPage" class="page">
+    <h2>Reports</h2>
+    <label>Choose Month:
+      <select id="monthSelect"></select>
+    </label>
+    <button onclick="renderReports()">Generate Report</button>
+    <h3>ShiftLog</h3>
+    <div id="shiftLog"></div>
+    <h3>Employee Summary</h3>
+    <div id="summary"></div>
+    <h3>Study Visits</h3>
+    <div id="summaryStudy"></div>
+    <h3>Site Visits</h3>
+    <div id="summarySite"></div>
+  </div>
 </body>
 </html>
