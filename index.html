@@ -85,7 +85,6 @@ function colorRenderer(instance, td, row, col, prop, value, cellProps){
   const color=monthStore[key]?.meta?.[`${row}:${col}`];
   if(color) td.style.background=color;
 
-  // Grey out full day columns outside the month
   const state = monthStore[key];
   if (state && state.calendar) {
     const weekIdx = weekIndexForRow(row);
@@ -112,12 +111,10 @@ async function renderMonth(){
   console.log("[RENDER] month", key, monthStore[key]);
 
   if(!monthStore[key]){
-    // Try loading from Firestore
     await loadMonthFromFirebase(y,m);
   }
 
   if(!monthStore[key]) {
-    // If still nothing, build a fresh blank month
     const weeks=numWeeks(y,m);
     const br=Array(weeks).fill(8);
     const data=buildDataFor(y,m,weeks,br);
@@ -210,7 +207,7 @@ window.directoryHot=new Handsontable(document.getElementById('directory'),{
 });
 function getDirectoryMap(){const map={};directoryHot.getData().forEach(r=>{const name=(r[0]||"").trim().toLowerCase();const email=(r[1]||"").trim();if(name&&email)map[name]=email;});return map;}
 
-/* ---------------- Process Schedule (Reports) ---------------- */
+/* ---------------- Reports ---------------- */
 function parseSchedule(y, m) {
   const key = monthKey(y, m);
   const state = monthStore[key];
@@ -369,9 +366,9 @@ async function saveMonthToFirebase(y,m){
   if(!state) return;
   try{
     await setDoc(doc(db,"months",key),{
-      data: JSON.stringify(state.data),
-      bodyRows: JSON.stringify(state.bodyRows),
-      meta: JSON.stringify(state.meta)
+      data: state.data,        // <-- arrays directly
+      bodyRows: state.bodyRows,
+      meta: state.meta
     });
     console.log("[SAVE] Wrote", key);
   }catch(e){console.error("Save error", e);}
@@ -385,9 +382,9 @@ async function loadMonthFromFirebase(y,m){
       const raw = snap.data();
       console.log("[LOAD raw]", raw);
       monthStore[key] = {
-        data: JSON.parse(raw.data),
-        bodyRows: JSON.parse(raw.bodyRows),
-        meta: JSON.parse(raw.meta),
+        data: raw.data || [],
+        bodyRows: raw.bodyRows || [],
+        meta: raw.meta || {},
         calendar: buildWeekMatrix(y,m,numWeeks(y,m)),
         dayMeta:{},
         shiftLog:[],summary:[],summaryStudy:[],summarySite:[],
